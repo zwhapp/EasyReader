@@ -1,0 +1,513 @@
+package com.zeoffice.einkreader.presentation.viewmodel
+
+import android.app.Application
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.zeoffice.einkreader.AppConfig
+import com.zeoffice.einkreader.cloud.AliyunDriveClient
+import com.zeoffice.einkreader.cloud.BaiduTokenPoll
+import com.zeoffice.einkreader.cloud.CloudProviderFactory
+import com.zeoffice.einkreader.data.db.BookEntity
+import com.zeoffice.einkreader.data.db.EinkDatabase
+import com.zeoffice.einkreader.data.repository.BookRepository
+import com.zeoffice.einkreader.data.repository.BookmarkRepository
+import com.zeoffice.einkreader.data.repository.CloudRepository
+import com.zeoffice.einkreader.data.repository.DictionaryRepository
+import com.zeoffice.einkreader.data.repository.SettingsRepository
+import com.zeoffice.einkreader.domain.import.BookImporter
+import com.zeoffice.einkreader.domain.import.CoverFactory
+import com.zeoffice.einkreader.webdav.WebDavClient
+import java.io.File
+import com.zeoffice.einkreader.domain.model.BookFormat
+import com.zeoffice.einkreader.domain.model.Bookmark
+import com.zeoffice.einkreader.domain.model.CloudAccount
+import com.zeoffice.einkreader.domain.model.CloudFile
+import com.zeoffice.einkreader.domain.model.ParsedBook
+import com.zeoffice.einkreader.domain.model.ReadingSettings
+import com.zeoffice.einkreader.updater.GitHubRelease
+import com.zeoffice.einkreader.updater.GitHubUpdater
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+sealed class ImportStatus {
+    object Idle : ImportStatus()
+    data class Importing(val msg: String) : ImportStatus()
+    object Done : ImportStatus()
+    data class Error(val msg: String) : ImportStatus()
+}
+
+/** 百度网盘扫码授权状态机 */
+sealed class BaiduLoginState {
+    object Idle : BaiduLoginState()
+
+    /** 已生成二维码, 等待用户扫码确认 */
+    data class Qr(
+        val qrUrl: String,
+        val userCode: String,
+        val verificationUrl: String,
+        val expiresInSeconds: Long
+    ) : BaiduLoginState()
+
+    /** 授权成功 (账户已保存) */
+    data class Success(val account: CloudAccount) : BaiduLoginState()
+
+    /** 失败 (含具体原因) */
+    data class Failed(val msg: String) : BaiduLoginState()
+}
+
+data class UpdateInfo(
+    val release: GitHubRelease? = null,
+    val apkUrl: String? = null,
+    val hasNew: Boolean = false,
+    val mirror: Boolean = false,
+    val error: String? = null
+)
+
+class MainViewModel(private val app: Application) : AndroidViewModel(app) {
+
+    private val db = EinkDatabase.get(app)
+    private val bookRepo = BookRepository(db)
+    private val settingsRepo = SettingsRepository(db)
+    private val bookmarkRepo = BookmarkRepository(db)
+    private val cloudRepo = CloudRepository(db)
+    val dictRepo = DictionaryRepository(app)
+
+    private val _books = MutableStateFlow<List<BookEntity>>(emptyList())
+    val books: StateFlow<List<BookEntity>> = _books.asStateFlow()
+
+    private val _settings = MutableStateFlow(ReadingSettings())
+    val settings: StateFlow<ReadingSettings> = _settings.asStateFlow()
+
+    private val _importStatus = MutableStateFlow<ImportStatus>(ImportStatus.Idle)
+    val importStatus: StateFlow<ImportStatus> = _importStatus.asStateFlow()
+
+    private val _parsedBook = MutableStateFlow<ParsedBook?>(null)
+    val parsedBook: StateFlow<ParsedBook?> = _parsedBook.asStateFlow()
+
+    /** 打开书籍失败的原因 (ReaderScreen 显示错误并返回) */
+    private val _openError = MutableStateFlow<String?>(null)
+    val openError: StateFlow<String?> = _openError.asStateFlow()
+
+    private val _accounts = MutableStateFlow<List<CloudAccount>>(emptyList())
+    val accounts: StateFlow<List<CloudAccount>> = _accounts.asStateFlow()
+
+    private val _baiduLogin = MutableStateFlow<BaiduLoginState>(BaiduLoginState.Idle)
+    val baiduLogin: StateFlow<BaiduLoginState> = _baiduLogin.asStateFlow()
+
+    private var baiduLoginJob: kotlinx.coroutines.Job? = null
+    private var cloudImportJob: kotlinx.coroutines.Job? = null
+
+    private val _bookmarks = MutableStateFlow<List<Bookmark>>(emptyList())
+    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+
+    private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
+    val updateInfo: StateFlow<UpdateInfo?> = _updateInfo.asStateFlow()
+
+    private val _checkingUpdate = MutableStateFlow(false)
+    val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
+
+    init {
+        viewModelScope.launch { _settings.value = settingsRepo.getSettings() }
+        loadBooks()
+        loadAccounts()
+        ensureCovers()
+    }
+
+    fun loadBooks() = viewModelScope.launch { _books.value = bookRepo.getAllBooks() }
+
+    /** 老书补封面: coverPath 为空的书按格式生成 (EPUB 取内嵌图, PDF 渲染首页, 其余占位封面) */
+    private fun ensureCovers() = viewModelScope.launch(Dispatchers.IO) {
+        val list = bookRepo.getAllBooks()
+        var changed = false
+        for (b in list) {
+            if (b.coverPath.isNotBlank() && File(b.coverPath).exists()) continue
+            val format = runCatching { BookFormat.valueOf(b.format) }.getOrDefault(BookFormat.TXT)
+            val dest = CoverFactory.coverFile(app, b.id)
+            val ok = runCatching {
+                if (format == BookFormat.PDF && File(b.filePath).exists()) {
+                    CoverFactory.fromPdf(File(b.filePath), dest) ||
+                            CoverFactory.placeholder(app, b.id, b.title, b.author, format)
+                } else {
+                    val parsed = runCatching { BookImporter.parse(b.filePath, format) }.getOrNull()
+                    (parsed?.coverData != null && CoverFactory.fromBytes(app, b.id, parsed.coverData)) ||
+                            CoverFactory.placeholder(app, b.id, b.title, b.author, format)
+                }
+            }.getOrDefault(false)
+            if (ok) {
+                bookRepo.update(b.copy(coverPath = dest.absolutePath))
+                changed = true
+            }
+        }
+        if (changed) loadBooks()
+    }
+    fun loadAccounts() = viewModelScope.launch { _accounts.value = cloudRepo.getAll() }
+
+    fun saveSettings(s: ReadingSettings) = viewModelScope.launch {
+        _settings.value = s
+        settingsRepo.saveSettings(s)
+    }
+
+    /** 导入: 本机 (SAF ACTION_OPEN_DOCUMENT 单文件) */
+    fun importUri(uri: Uri, displayName: String) = viewModelScope.launch(Dispatchers.IO) {
+        try {
+            _importStatus.value = ImportStatus.Importing("正在导入 $displayName …")
+            importSingle(uri, displayName, source = "local")
+            loadBooks()
+            _importStatus.value = ImportStatus.Done
+        } catch (e: Exception) {
+            _importStatus.value = ImportStatus.Error(e.message ?: "导入失败")
+        }
+    }
+
+    /**
+     * 导入: SAF 文件夹批量 (ACTION_OPEN_DOCUMENT_TREE)
+     * 用户可选中百度网盘等 DocumentsProvider 的目录, 逐个复制到私有目录后加入书架
+     */
+    fun importTree(treeUri: Uri) = viewModelScope.launch(Dispatchers.IO) {
+        try {
+            _importStatus.value = ImportStatus.Importing("正在扫描文件夹 …")
+            val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(app, treeUri)
+            if (tree == null || !tree.canRead()) {
+                _importStatus.value = ImportStatus.Error("无法访问所选文件夹，请重新选择")
+                return@launch
+            }
+            val supported = tree.listFiles()
+                .filter { !it.isDirectory && BookFormat.fromFilename(it.name ?: "") != null }
+                .sortedBy { it.name ?: "" }
+            if (supported.isEmpty()) {
+                _importStatus.value = ImportStatus.Error("所选文件夹中未找到电子书 (支持 epub/txt/mobi/azw/pdf)")
+                return@launch
+            }
+            var ok = 0
+            var fail = 0
+            supported.forEachIndexed { i, doc ->
+                val name = doc.name ?: "book_$i"
+                _importStatus.value = ImportStatus.Importing("正在导入 (${i + 1}/${supported.size}) $name …")
+                try {
+                    importSingle(doc.uri, name, source = "local")
+                    ok++
+                } catch (_: Exception) {
+                    fail++
+                }
+            }
+            loadBooks()
+            _importStatus.value = if (fail == 0) ImportStatus.Done
+            else ImportStatus.Error("批量导入完成：成功 $ok 本，失败 $fail 本")
+        } catch (e: Exception) {
+            _importStatus.value = ImportStatus.Error(e.message ?: "批量导入失败")
+        }
+    }
+
+    /** 单本导入: openInputStream → 复制到私有目录 → 解析元数据 → 入库 */
+    private suspend fun importSingle(uri: Uri, displayName: String, source: String) {
+        val format = BookFormat.fromFilename(displayName) ?: BookFormat.TXT
+        val file = BookImporter.materializeUri(app, uri, displayName)
+        val parsed = BookImporter.parse(file.absolutePath, format)
+        val title = parsed?.title?.takeIf { it.isNotBlank() }
+            ?: displayName.substringBeforeLast('.')
+        val entity = BookEntity(
+            title = title,
+            author = parsed?.author ?: "",
+            format = format.name,
+            filePath = file.absolutePath,
+            fileSize = file.length(),
+            importedAt = System.currentTimeMillis(),
+            source = source,
+            chapterCount = parsed?.chapters?.size ?: 0
+        )
+        val id = bookRepo.insert(entity).toInt()
+        generateCover(id, file.absolutePath, format, title, parsed?.coverData)
+    }
+
+    /** 生成并保存书籍封面: EPUB 内嵌图 / PDF 首页 > 样式化占位图 */
+    private suspend fun generateCover(
+        bookId: Int,
+        filePath: String,
+        format: BookFormat,
+        title: String,
+        coverData: ByteArray?
+    ) {
+        val dest = CoverFactory.coverFile(app, bookId)
+        val ok = runCatching {
+            when {
+                coverData != null -> CoverFactory.fromBytes(app, bookId, coverData)
+                format == BookFormat.PDF && File(filePath).exists() ->
+                    CoverFactory.fromPdf(File(filePath), dest)
+                else -> false
+            } || CoverFactory.placeholder(app, bookId, title, "", format)
+        }.getOrDefault(false)
+        if (ok) {
+            bookRepo.getBook(bookId)?.let { bookRepo.update(it.copy(coverPath = dest.absolutePath)) }
+        }
+    }
+
+    /** 导入: 云盘 / WebDAV */
+    fun importCloud(account: CloudAccount, file: CloudFile) {
+        cloudImportJob?.cancel()
+        cloudImportJob = viewModelScope.launch(Dispatchers.IO) {
+            var dest: File? = null
+            try {
+                _importStatus.value = ImportStatus.Importing("正在下载 ${file.name} …")
+                val provider = CloudProviderFactory.create(account)
+                val format = BookFormat.fromFilename(file.name) ?: BookFormat.TXT
+                dest = BookImporter.uniqueName(app, file.name)
+                var lastPercent = -1
+                val ok = provider.download(file, dest) { downloaded, total ->
+                    // 进度回调 (IO 线程): 百分比变化才刷新, 避免刷屏
+                    val msg = if (total > 0) {
+                        val pct = (downloaded * 100 / total).toInt().coerceIn(0, 100)
+                        if (pct == lastPercent) return@download
+                        lastPercent = pct
+                        "正在下载 ${file.name} ${pct}%"
+                    } else {
+                        val mb = downloaded / 1024.0 / 1024.0
+                        "正在下载 ${file.name} (已下载 %.1f MB)".format(mb)
+                    }
+                    _importStatus.value = ImportStatus.Importing(msg)
+                }
+                if (provider is AliyunDriveClient) {
+                    cloudRepo.save(provider.updatedAccount())
+                    loadAccounts()
+                }
+                if (!ok) {
+                    _importStatus.value = ImportStatus.Error("下载失败")
+                    return@launch
+                }
+                val parsed = BookImporter.parse(dest.absolutePath, format)
+                val title = parsed?.title?.takeIf { it.isNotBlank() }
+                    ?: file.name.substringBeforeLast('.')
+                val entity = BookEntity(
+                    title = title,
+                    author = parsed?.author ?: "",
+                    format = format.name,
+                    filePath = dest.absolutePath,
+                    fileSize = dest.length(),
+                    importedAt = System.currentTimeMillis(),
+                    source = account.provider,
+                    remotePath = file.path,
+                    chapterCount = parsed?.chapters?.size ?: 0
+                )
+                val newId = bookRepo.insert(entity).toInt()
+                generateCover(newId, dest.absolutePath, format, title, parsed?.coverData)
+                loadBooks()
+                _importStatus.value = ImportStatus.Done
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 用户主动取消导入: 清理半成品文件并回Idle, 不报错
+                runCatching { dest?.delete() }
+                _importStatus.value = ImportStatus.Idle
+                throw e
+            } catch (e: Exception) {
+                _importStatus.value = ImportStatus.Error(e.message ?: "导入失败")
+            }
+        }
+    }
+
+    /** 取消当前云盘/WebDAV 导入 (退出确认时调用) */
+    fun cancelCloudImport() {
+        cloudImportJob?.cancel()
+        cloudImportJob = null
+    }
+
+    /** 打开书籍 (PDF 返回 null, 由阅读器用 PdfRenderer) */
+    fun openBook(book: BookEntity) = viewModelScope.launch(Dispatchers.IO) {
+        _openError.value = null
+        try {
+            val format = BookFormat.valueOf(book.format)
+            if (format == BookFormat.PDF) {
+                _parsedBook.value = null
+                return@launch
+            }
+            val parsed = BookImporter.parse(book.filePath, format)
+            if (parsed == null || parsed.chapters.isEmpty() ||
+                parsed.chapters.all { it.text.isBlank() }
+            ) {
+                _parsedBook.value = null
+                _openError.value = "无法解析此书 (${format.label})：文件可能损坏或受 DRM 保护"
+            } else {
+                _parsedBook.value = parsed
+            }
+        } catch (e: Exception) {
+            _parsedBook.value = null
+            _openError.value = "无法打开此书：${e.message ?: "解析失败"}"
+        }
+    }
+
+    fun clearOpenError() {
+        _openError.value = null
+    }
+
+    fun clearParsed() {
+        _parsedBook.value = null
+    }
+
+    fun clearImportIdle() {
+        if (_importStatus.value !is ImportStatus.Idle) _importStatus.value = ImportStatus.Idle
+    }
+
+    fun savePosition(
+        bookId: Int,
+        chapterIndex: Int,
+        charOffset: Int,
+        progressPercent: Int
+    ) = viewModelScope.launch(Dispatchers.IO) {
+        val b = bookRepo.getBook(bookId) ?: return@launch
+        bookRepo.update(
+            b.copy(
+                chapterIndex = chapterIndex,
+                charOffset = charOffset,
+                progressPercent = progressPercent
+            )
+        )
+        loadBooks()
+    }
+
+    fun deleteBook(book: BookEntity) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { File(book.filePath).delete() }
+        bookRepo.delete(book)
+        loadBooks()
+    }
+
+    /** 书签 */
+    fun loadBookmarks(bookId: Int) = viewModelScope.launch(Dispatchers.IO) {
+        _bookmarks.value = bookmarkRepo.getByBook(bookId)
+    }
+
+    fun addBookmark(b: Bookmark) = viewModelScope.launch(Dispatchers.IO) {
+        bookmarkRepo.add(b)
+        loadBookmarks(b.bookId)
+    }
+
+    fun removeBookmark(id: Int, bookId: Int) = viewModelScope.launch(Dispatchers.IO) {
+        bookmarkRepo.remove(id)
+        loadBookmarks(bookId)
+    }
+
+    /**
+     * 百度网盘扫码授权登录 — 生成二维码并轮询, 成功后自动保存账户。
+     * AppKey/SecretKey 内置于应用 (BaiduConfig), 用户无需填写。
+     */
+    fun startBaiduQrLogin() {
+        baiduLoginJob?.cancel()
+        _baiduLogin.value = BaiduLoginState.Idle
+        baiduLoginJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val oauth = com.zeoffice.einkreader.cloud.BaiduOAuth()
+                val dc = oauth.requestDeviceCode()
+                _baiduLogin.value = BaiduLoginState.Qr(
+                    qrUrl = dc.qrCodeUrl,
+                    userCode = dc.userCode,
+                    verificationUrl = dc.verificationUrl,
+                    expiresInSeconds = dc.expiresInSeconds
+                )
+                val deadline = System.currentTimeMillis() + dc.expiresInSeconds * 1000
+                val interval = (dc.intervalSec.coerceIn(2, 15)) * 1000L
+                while (System.currentTimeMillis() < deadline) {
+                    kotlinx.coroutines.delay(interval)
+                    when (val r = oauth.pollToken(dc.deviceCode)) {
+                        is BaiduTokenPoll.Pending -> { /* 继续轮询 */ }
+                        is BaiduTokenPoll.Done -> {
+                            val acc = CloudAccount(
+                                provider = "baidu",
+                                name = "百度网盘",
+                                accessToken = r.accessToken,
+                                refreshToken = r.refreshToken,
+                                expiresAt = System.currentTimeMillis() + r.expiresInSeconds * 1000
+                            )
+                            val id = cloudRepo.save(acc)
+                            loadAccounts()
+                            _baiduLogin.value = BaiduLoginState.Success(acc.copy(id = id.toInt()))
+                            return@launch
+                        }
+                        is BaiduTokenPoll.Expired -> {
+                            _baiduLogin.value = BaiduLoginState.Failed(r.msg)
+                            return@launch
+                        }
+                        is BaiduTokenPoll.Error -> {
+                            _baiduLogin.value = BaiduLoginState.Failed(r.msg)
+                            return@launch
+                        }
+                    }
+                }
+                _baiduLogin.value = BaiduLoginState.Failed("二维码已过期，请刷新后重新扫码")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _baiduLogin.value = BaiduLoginState.Failed(e.message ?: "扫码登录失败")
+            }
+        }
+    }
+
+    fun resetBaiduLogin() {
+        baiduLoginJob?.cancel()
+        _baiduLogin.value = BaiduLoginState.Idle
+    }
+
+    /** 云盘账户 — 返回该行 id (新建时为插入后的 id) */
+    suspend fun saveAccount(a: CloudAccount): Long {
+        val id = cloudRepo.save(a)
+        loadAccounts()
+        return id
+    }
+
+    fun deleteAccount(id: Int) = viewModelScope.launch(Dispatchers.IO) {
+        cloudRepo.delete(id)
+        loadAccounts()
+    }
+
+    /**
+     * WebDAV 测试连接 — 验证地址 / 账号 / 密码, 返回结果描述 (成功或具体失败原因)
+     */
+    suspend fun testWebDavConnection(host: String, username: String, password: String): String =
+        withContext(Dispatchers.IO) {
+            runCatching { WebDavClient(host, username, password).testConnection() }
+                .getOrDefault("测试异常，请重试")
+        }
+
+    /** 更新检查 — 无论成功失败都给出明确结果 (有新版 / 已最新 / 失败原因) */
+    fun checkUpdate(useMirror: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+        _checkingUpdate.value = true
+        try {
+            val updater = GitHubUpdater(app)
+            val release = try {
+                updater.checkLatest(useMirror)
+            } catch (e: Exception) {
+                _updateInfo.value = UpdateInfo(error = e.message ?: "检查更新失败", mirror = useMirror)
+                return@launch
+            }
+            val apk = try {
+                updater.findApkAsset(release, useMirror)
+            } catch (_: Exception) {
+                null
+            }
+            val hasNew = compareVersion(release.tag, AppConfig.VERSION_NAME) > 0
+            _updateInfo.value = UpdateInfo(release, apk, hasNew, useMirror)
+        } finally {
+            _checkingUpdate.value = false
+        }
+    }
+
+    fun downloadAndInstallUpdate(apkUrl: String) {
+        val updater = GitHubUpdater(app)
+        val file = updater.downloadApk(apkUrl)
+        if (updater.isSignatureValid(file.absolutePath)) {
+            updater.installApk(file)
+        }
+    }
+
+    private fun compareVersion(tag: String, current: String): Int {
+        val a = tag.trim().trimStart('v', 'V').split('.').map { it.toIntOrNull() ?: 0 }
+        val b = current.trim().trimStart('v', 'V').split('.').map { it.toIntOrNull() ?: 0 }
+        val n = maxOf(a.size, b.size)
+        for (i in 0 until n) {
+            val x = a.getOrElse(i) { 0 }
+            val y = b.getOrElse(i) { 0 }
+            if (x != y) return x - y
+        }
+        return 0
+    }
+}
