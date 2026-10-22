@@ -1,0 +1,29 @@
+# Android
+*.iml
+.gradle/
+.kotlin/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Gradle wrapper 缓存的分发包（非源码，可重新下载）
+gradle/wrapper/*.zip
+
+# 签名密钥 — 绝不入库
+keystore.properties
+*.jks
+*.keystore
+
+# 构建日志（不应入库）
+build_*.log
+
+# 测试 / 调试产物（截图、临时样本）
+test_screenshots/
+test_book.txt
+
+# APK 产物（通过 GitHub Release 分发，不入库）
+*.apk
