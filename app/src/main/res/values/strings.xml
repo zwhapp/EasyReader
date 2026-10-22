@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">EasyReader</string>
+    <string name="action_import">导入</string>
+    <string name="action_webdav">WebDAV</string>
+    <string name="action_check_update">检查更新</string>
+    <string name="action_reading">阅读</string>
+</resources>
