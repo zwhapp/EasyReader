@@ -8,6 +8,10 @@
 # ---- Gson: 依赖反射的字段 ----
 -keep class com.zeoffice.einkreader.updater.GitHubRelease { *; }
 -keep class com.zeoffice.einkreader.data.db.** { *; }
+# WebDAV 同步索引模型 (LibraryIndex/RemoteBookEntry/RemoteProgress) 由 Gson 反序列化,
+# 含泛型 List 字段; 必须整体 keep, 否则 R8 合并/重命名会破坏泛型导致
+# ClassCastException: LinkedTreeMap cannot be cast to RemoteBookEntry
+-keep class com.zeoffice.einkreader.domain.model.sync.** { *; }
 -keepattributes Signature, *Annotation*, InnerClasses, EnclosingMethod
 -keep class * extends com.google.gson.reflect.TypeToken
 -keep public class * implements java.lang.reflect.Type
