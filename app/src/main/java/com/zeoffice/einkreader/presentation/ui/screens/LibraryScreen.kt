@@ -63,6 +63,9 @@ fun LibraryScreen(nav: NavHostController, vm: MainViewModel) {
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
 
+    // 每次进入书架强制刷新, 确保从网盘/其他来源导入的书籍及时出现在书架 (#4)
+    LaunchedEffect(Unit) { vm.loadBooks() }
+
     // SAF 单文件导入 (ACTION_OPEN_DOCUMENT): 系统文件选择器, 顶部可切换到百度网盘等 DocumentsProvider
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -177,18 +180,7 @@ fun LibraryScreen(nav: NavHostController, vm: MainViewModel) {
                 }
             }
             if (importStatus is ImportStatus.Importing) {
-                Column(
-                    Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        (importStatus as ImportStatus.Importing).msg,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                    )
-                }
+                ImportProgressOverlay((importStatus as ImportStatus.Importing).msg)
             }
         }
     }

@@ -25,9 +25,14 @@ import com.zeoffice.einkreader.domain.model.CloudAccount
 import com.zeoffice.einkreader.domain.model.CloudFile
 import com.zeoffice.einkreader.domain.model.ParsedBook
 import com.zeoffice.einkreader.domain.model.ReadingSettings
+import com.zeoffice.einkreader.domain.model.sync.ConflictPolicy
+import com.zeoffice.einkreader.domain.model.sync.SyncDirection
+import com.zeoffice.einkreader.domain.model.sync.SyncStatus
 import com.zeoffice.einkreader.updater.GitHubRelease
 import com.zeoffice.einkreader.updater.GitHubUpdater
+import com.zeoffice.einkreader.webdav.WebDavSyncManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -110,6 +115,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
+
+    /** WebDAV 同步状态 (进度 / 结果 / 错误) */
+    private val _syncStatus = MutableStateFlow<SyncStatus>(SyncStatus.Idle)
+    val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
+    private var syncJob: Job? = null
 
     init {
         viewModelScope.launch { _settings.value = settingsRepo.getSettings() }
@@ -360,7 +370,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             b.copy(
                 chapterIndex = chapterIndex,
                 charOffset = charOffset,
-                progressPercent = progressPercent
+                progressPercent = progressPercent,
+                progressUpdatedAt = System.currentTimeMillis()
             )
         )
         loadBooks()
@@ -467,6 +478,42 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             runCatching { WebDavClient(host, username, password).testConnection() }
                 .getOrDefault("测试异常，请重试")
         }
+
+    /**
+     * WebDAV 双向同步书库 — 书籍文件 + 阅读进度。
+     * @param syncFiles true=同步书籍文件与进度; false=仅同步阅读进度
+     */
+    fun syncLibrary(
+        account: CloudAccount,
+        direction: SyncDirection,
+        policy: ConflictPolicy,
+        syncFiles: Boolean
+    ) {
+        syncJob?.cancel()
+        syncJob = viewModelScope.launch(Dispatchers.IO) {
+            _syncStatus.value = SyncStatus.Syncing("正在连接服务器…", 0, 0)
+            try {
+                val manager = WebDavSyncManager(app, bookRepo, db.syncStateDao())
+                val result = manager.sync(account, direction, policy, syncFiles) { msg, done, total ->
+                    _syncStatus.value = SyncStatus.Syncing(msg, done, total)
+                }
+                loadBooks()
+                _syncStatus.value = SyncStatus.Done(result)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _syncStatus.value = SyncStatus.Idle
+                throw e
+            } catch (e: Exception) {
+                _syncStatus.value = SyncStatus.Error(e.message ?: "同步失败")
+            }
+        }
+    }
+
+    /** 取消同步 / 清除同步状态 */
+    fun clearSyncStatus() {
+        syncJob?.cancel()
+        syncJob = null
+        _syncStatus.value = SyncStatus.Idle
+    }
 
     /** 更新检查 — 无论成功失败都给出明确结果 (有新版 / 已最新 / 失败原因) */
     fun checkUpdate(useMirror: Boolean) = viewModelScope.launch(Dispatchers.IO) {

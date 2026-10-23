@@ -3,12 +3,20 @@ package com.zeoffice.einkreader.webdav
 import android.util.Base64
 import com.zeoffice.einkreader.cloud.CloudProvider
 import com.zeoffice.einkreader.domain.model.CloudFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
+import okio.BufferedSink
+import okio.ForwardingSink
+import okio.buffer
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.File
@@ -152,6 +160,8 @@ class WebDavClient(
                         out.write(buf, 0, read)
                         downloaded += read
                         onProgress(downloaded, total)
+                        // 阻塞读取循环中检查协程是否已取消, 使取消能真正中断下载
+                        if (!coroutineContext.isActive) throw CancellationException("导入已取消")
                     }
                 }
             }
@@ -159,6 +169,116 @@ class WebDavClient(
             true
         } catch (e: Exception) {
             false
+        }
+    }
+
+    /**
+     * 上传本地文件到指定 URL (PUT), 带上传进度回调。
+     * 用于同步: 将书籍文件推送到 WebDAV 服务器。
+     */
+    suspend fun upload(
+        path: String,
+        file: File,
+        onProgress: (Long, Long) -> Unit = { _, _ -> }
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (!file.exists()) return@withContext false
+            val url = normalize(path)
+            val delegate = file.asRequestBody("application/octet-stream".toMediaType())
+            val body = ProgressRequestBody(delegate, onProgress)
+            val req = Request.Builder()
+                .url(url)
+                .put(body)
+                .header("Authorization", authHeader)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                resp.isSuccessful || resp.code in listOf(200, 201, 204)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 上传文本到指定 URL (PUT), 用于写入 library.json 索引。
+     */
+    suspend fun uploadText(path: String, text: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = normalize(path)
+            val body = text.toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req = Request.Builder()
+                .url(url)
+                .put(body)
+                .header("Authorization", authHeader)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                resp.isSuccessful || resp.code in listOf(200, 201, 204)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 创建目录 (MKCOL)。已存在时返回 true (405/207 等均视为成功)。
+     * 用于同步: 确保 EasyReader/ 与 books/ 目录存在。
+     */
+    suspend fun createDir(path: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = normalize(path)
+            val req = Request.Builder()
+                .url(url)
+                .method("MKCOL", ByteArray(0).toRequestBody(null))
+                .header("Authorization", authHeader)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                resp.isSuccessful || resp.code in listOf(200, 201, 204, 205, 207, 405)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 删除远程文件/目录 (DELETE)。用于同步清理 (当前同步不主动删除, 预留)。
+     */
+    suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = normalize(path)
+            val req = Request.Builder()
+                .url(url)
+                .delete()
+                .header("Authorization", authHeader)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                resp.isSuccessful || resp.code in listOf(204, 404)
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 读取远程文本 (GET)。用于拉取 library.json 索引; 不存在 (404) 返回 null。
+     */
+    suspend fun getText(path: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val url = normalize(path)
+            val req = Request.Builder()
+                .url(url)
+                .header("Authorization", authHeader)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                when {
+                    resp.isSuccessful -> resp.body?.string()
+                    resp.code == 404 -> null
+                    else -> throw IOException("读取失败 (HTTP ${resp.code})")
+                }
+            }
+        } catch (e: IOException) {
+            throw e
+        } catch (e: Exception) {
+            throw IOException(e.message ?: "读取失败")
         }
     }
 
@@ -262,4 +382,27 @@ class WebDavClient(
         .replace("#", "%23")
         .replace("?", "%3F")
         .replace("&", "%26")
+}
+
+/** 上报上传进度的 RequestBody 包装 (委托底层 RequestBody, 逐字节计数) */
+private class ProgressRequestBody(
+    private val delegate: RequestBody,
+    private val onProgress: (Long, Long) -> Unit
+) : RequestBody() {
+    override fun contentType() = delegate.contentType()
+    override fun contentLength() = delegate.contentLength()
+    override fun writeTo(sink: BufferedSink) {
+        val total = contentLength()
+        val counting = object : ForwardingSink(sink) {
+            private var sent = 0L
+            override fun write(source: Buffer, byteCount: Long) {
+                super.write(source, byteCount)
+                sent += byteCount
+                onProgress(sent, total)
+            }
+        }
+        val buffered = counting.buffer()
+        delegate.writeTo(buffered)
+        buffered.flush()
+    }
 }

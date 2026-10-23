@@ -2,7 +2,9 @@ package com.zeoffice.einkreader.cloud
 
 import com.zeoffice.einkreader.domain.model.CloudAccount
 import com.zeoffice.einkreader.domain.model.CloudFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -130,6 +132,8 @@ class BaiduPanClient(
                         out.write(buf, 0, r)
                         d += r
                         onProgress(d, total)
+                        // 关键: 阻塞读取循环中检查协程是否已取消, 否则 cancel() 无法中断下载
+                        if (!coroutineContext.isActive) throw CancellationException("导入已取消")
                     }
                 }
             }

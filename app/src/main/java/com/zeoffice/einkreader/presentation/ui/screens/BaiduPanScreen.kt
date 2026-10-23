@@ -104,7 +104,7 @@ fun BaiduPanScreen(nav: NavHostController, vm: MainViewModel) {
         AlertDialog(
             onDismissRequest = { showExitConfirm = false },
             title = { Text("退出网盘导入") },
-            text = { Text("确认退出将取消当前导入操作") },
+            text = { Text("确认退出将取消正在进行的导入，已下载的临时文件会被丢弃。") },
             confirmButton = {
                 TextButton(onClick = {
                     showExitConfirm = false
@@ -145,80 +145,85 @@ fun BaiduPanScreen(nav: NavHostController, vm: MainViewModel) {
             )
         }
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            when {
-                // 未登录 → 扫码授权
-                baiduAccount == null -> QrLoginContent(
-                    loginState = loginState,
-                    onStart = { vm.startBaiduQrLogin() },
-                    onRetry = { vm.startBaiduQrLogin() }
-                )
-                else -> {
-                    // 目录权限说明 (百度开放平台限制)
-                    Text(
-                        "仅可下载「我的应用数据」目录下的文件（百度开放平台权限限制）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp)
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                when {
+                    // 未登录 → 扫码授权
+                    baiduAccount == null -> QrLoginContent(
+                        loginState = loginState,
+                        onStart = { vm.startBaiduQrLogin() },
+                        onRetry = { vm.startBaiduQrLogin() }
                     )
-                    // 面包屑 / 上级
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (currentPath.isNotBlank() && currentPath != "/") {
-                            TextButton(onClick = {
-                                val idx = currentPath.trimEnd('/').lastIndexOf('/')
-                                currentPath = if (idx <= 0) "/" else currentPath.substring(0, idx)
-                            }) { Text("← 上级目录") }
-                        }
-                        Spacer(Modifier.weight(1f))
-                        if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    }
-                    when {
-                        loading && files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
-                        browseError != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    browseError!!,
-                                    color = MaterialTheme.colorScheme.error,
-                                    textAlign = TextAlign.Center,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Spacer(Modifier.height(12.dp))
-                                TextButton(onClick = { refreshKey++ }) { Text("重试") }
-                            }
-                        }
-                        files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("此目录为空", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        else -> LazyColumn(
-                            contentPadding = PaddingValues(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                    else -> {
+                        // 目录权限说明 (百度开放平台限制)
+                        Text(
+                            "仅可下载「我的应用数据」目录下的文件（百度开放平台权限限制）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        // 面包屑 / 上级
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            items(files, key = { it.path + it.name }) { f ->
-                                FileRow(
-                                    file = f,
-                                    onClick = {
-                                        if (f.isDir) {
-                                            currentPath = if (currentPath.isBlank() || currentPath == "/") {
-                                                "/" + f.name
+                            if (currentPath.isNotBlank() && currentPath != "/") {
+                                TextButton(onClick = {
+                                    val idx = currentPath.trimEnd('/').lastIndexOf('/')
+                                    currentPath = if (idx <= 0) "/" else currentPath.substring(0, idx)
+                                }) { Text("← 上级目录") }
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                        when {
+                            loading && files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                            browseError != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        browseError!!,
+                                        color = MaterialTheme.colorScheme.error,
+                                        textAlign = TextAlign.Center,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    TextButton(onClick = { refreshKey++ }) { Text("重试") }
+                                }
+                            }
+                            files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("此目录为空", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            else -> LazyColumn(
+                                contentPadding = PaddingValues(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(files, key = { it.path + it.name }) { f ->
+                                    FileRow(
+                                        file = f,
+                                        onClick = {
+                                            if (f.isDir) {
+                                                currentPath = if (currentPath.isBlank() || currentPath == "/") {
+                                                    "/" + f.name
+                                                } else {
+                                                    currentPath.trimEnd('/') + "/" + f.name
+                                                }
+                                            } else if (BookFormat.fromFilename(f.name) != null) {
+                                                vm.importCloud(baiduAccount, f)
                                             } else {
-                                                currentPath.trimEnd('/') + "/" + f.name
+                                                android.widget.Toast.makeText(context, "不支持的格式", android.widget.Toast.LENGTH_SHORT).show()
                                             }
-                                        } else if (BookFormat.fromFilename(f.name) != null) {
-                                            vm.importCloud(baiduAccount, f)
-                                        } else {
-                                            android.widget.Toast.makeText(context, "不支持的格式", android.widget.Toast.LENGTH_SHORT).show()
                                         }
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+            if (importStatus is ImportStatus.Importing) {
+                ImportProgressOverlay((importStatus as ImportStatus.Importing).msg)
             }
         }
     }

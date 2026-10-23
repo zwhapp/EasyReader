@@ -20,7 +20,9 @@ data class BookEntity(
     val chapterIndex: Int = 0,
     val charOffset: Int = 0,
     val chapterCount: Int = 0,
-    val coverPath: String = ""
+    val coverPath: String = "",
+    /** 阅读进度最近更新时间 (毫秒) — 用于同步时检测本地进度是否改动 */
+    val progressUpdatedAt: Long = 0L
 )
 
 @Dao

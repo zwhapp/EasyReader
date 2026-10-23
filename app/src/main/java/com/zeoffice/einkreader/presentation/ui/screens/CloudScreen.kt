@@ -98,6 +98,7 @@ fun CloudScreen(nav: NavHostController, vm: MainViewModel) {
                     }
                 },
                 actions = {
+                    TextButton(onClick = { nav.navigate("sync") }) { Text("同步") }
                     TextButton(onClick = { showAdd = true }) { Text("添加服务器") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -106,96 +107,101 @@ fun CloudScreen(nav: NavHostController, vm: MainViewModel) {
             )
         }
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            // 账户列表
-            if (accounts.isEmpty()) {
-                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
-                    Text("尚未添加 WebDAV 服务器", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                // 账户列表
+                if (accounts.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("尚未添加 WebDAV 服务器", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    LazyColumn(
+                        contentPadding = PaddingValues(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.heightIn(max = 160.dp)
+                    ) {
+                        items(accounts, key = { it.id }) { acc ->
+                            AccountChip(
+                                account = acc,
+                                selected = acc.id == effectiveId,
+                                onClick = {
+                                    selectedId = acc.id
+                                    currentPath = ""
+                                },
+                                onDelete = { vm.deleteAccount(acc.id) }
+                            )
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.heightIn(max = 160.dp)
-                ) {
-                    items(accounts, key = { it.id }) { acc ->
-                        AccountChip(
-                            account = acc,
-                            selected = acc.id == effectiveId,
-                            onClick = {
-                                selectedId = acc.id
-                                currentPath = ""
-                            },
-                            onDelete = { vm.deleteAccount(acc.id) }
-                        )
+
+                HorizontalDivider()
+
+                // 目录浏览
+                if (selectedAccount == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("请点右上角「添加服务器」", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    // 面包屑 / 上级
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (currentPath.isNotBlank() &&
+                            currentPath.trimEnd('/') != selectedAccount.host.trimEnd('/')
+                        ) {
+                            TextButton(onClick = {
+                                val idx = currentPath.trimEnd('/').lastIndexOf('/')
+                                currentPath = if (idx <= 7) selectedAccount.host.trimEnd('/')
+                                else currentPath.substring(0, idx)
+                            }) { Text("← 上级目录") }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
+                    when {
+                        loading && files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                        browseError != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    browseError!!,
+                                    color = MaterialTheme.colorScheme.error,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                TextButton(onClick = { refreshKey++ }) { Text("重试") }
+                            }
+                        }
+                        files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("此目录为空", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        else -> LazyColumn(
+                            contentPadding = PaddingValues(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(files, key = { it.path + it.name }) { f ->
+                                FileRow(
+                                    file = f,
+                                    onClick = {
+                                        if (f.isDir) {
+                                            currentPath = f.path
+                                        } else if (BookFormat.fromFilename(f.name) != null) {
+                                            vm.importCloud(selectedAccount, f)
+                                        } else {
+                                            android.widget.Toast.makeText(context, "不支持的格式", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
-
-            HorizontalDivider()
-
-            // 目录浏览
-            if (selectedAccount == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("请点右上角「添加服务器」", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                // 面包屑 / 上级
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (currentPath.isNotBlank() &&
-                        currentPath.trimEnd('/') != selectedAccount.host.trimEnd('/')
-                    ) {
-                        TextButton(onClick = {
-                            val idx = currentPath.trimEnd('/').lastIndexOf('/')
-                            currentPath = if (idx <= 7) selectedAccount.host.trimEnd('/')
-                            else currentPath.substring(0, idx)
-                        }) { Text("← 上级目录") }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
-                when {
-                    loading && files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                    browseError != null -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                browseError!!,
-                                color = MaterialTheme.colorScheme.error,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(onClick = { refreshKey++ }) { Text("重试") }
-                        }
-                    }
-                    files.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("此目录为空", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    else -> LazyColumn(
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(files, key = { it.path + it.name }) { f ->
-                            FileRow(
-                                file = f,
-                                onClick = {
-                                    if (f.isDir) {
-                                        currentPath = f.path
-                                    } else if (BookFormat.fromFilename(f.name) != null) {
-                                        vm.importCloud(selectedAccount, f)
-                                    } else {
-                                        android.widget.Toast.makeText(context, "不支持的格式", android.widget.Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
+            if (importStatus is ImportStatus.Importing) {
+                ImportProgressOverlay((importStatus as ImportStatus.Importing).msg)
             }
         }
     }
