@@ -30,6 +30,7 @@ import com.zeoffice.einkreader.domain.model.sync.SyncDirection
 import com.zeoffice.einkreader.domain.model.sync.SyncStatus
 import com.zeoffice.einkreader.updater.GitHubRelease
 import com.zeoffice.einkreader.updater.GitHubUpdater
+import com.zeoffice.einkreader.updater.InstallResult
 import com.zeoffice.einkreader.webdav.WebDavSyncManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -115,6 +116,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
+
+    /** 下载/安装更新的进度与结果提示 (null = 空闲) */
+    private val _updateProgress = MutableStateFlow<String?>(null)
+    val updateProgress: StateFlow<String?> = _updateProgress.asStateFlow()
+
+    /** 是否正在下载/安装更新 (用于禁用按钮、显示进度条) */
+    private val _updateRunning = MutableStateFlow(false)
+    val updateRunning: StateFlow<Boolean> = _updateRunning.asStateFlow()
+    private var updateJob: Job? = null
 
     /** WebDAV 同步状态 (进度 / 结果 / 错误) */
     private val _syncStatus = MutableStateFlow<SyncStatus>(SyncStatus.Idle)
@@ -538,11 +548,48 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 下载并安装更新。
+     *
+     * 历史缺陷 (点更新即崩溃/无反应):
+     *  1) 旧代码用 DownloadManager 异步下载, enqueue 后立刻校验签名 —— 文件尚未落盘,
+     *     校验必然失败, 安装永远不触发;
+     *  2) installApk 从 Application context 启动 Activity 却漏了 FLAG_ACTIVITY_NEW_TASK,
+     *     直接抛 AndroidRuntimeException 导致应用退出。
+     *
+     * 现在: 全程 IO 线程, OkHttp 下载完成后再校验, 安装结果以文案反馈而非崩溃。
+     */
     fun downloadAndInstallUpdate(apkUrl: String) {
-        val updater = GitHubUpdater(app)
-        val file = updater.downloadApk(apkUrl)
-        if (updater.isSignatureValid(file.absolutePath)) {
-            updater.installApk(file)
+        updateJob?.cancel()
+        updateJob = viewModelScope.launch(Dispatchers.IO) {
+            _updateRunning.value = true
+            _updateProgress.value = "正在下载…"
+            try {
+                val updater = GitHubUpdater(app)
+                val file = updater.downloadApk(apkUrl) { downloaded, total ->
+                    _updateProgress.value = if (total > 0) {
+                        "正在下载… ${(downloaded * 100 / total).toInt()}%"
+                    } else {
+                        "正在下载… ${downloaded / 1024} KB"
+                    }
+                }
+                _updateProgress.value = "正在校验签名…"
+                if (!updater.isSignatureValid(file.absolutePath)) {
+                    file.delete()
+                    _updateProgress.value = "校验失败：安装包签名与当前应用不一致，已取消安装"
+                    return@launch
+                }
+                _updateProgress.value = when (val r = updater.installApk(file)) {
+                    is InstallResult.Started -> "已唤起安装界面，请在系统界面确认"
+                    is InstallResult.NeedPermission ->
+                        "请先在系统设置中允许本应用「安装未知应用」，然后重新点击更新"
+                    is InstallResult.Failed -> "安装失败：${r.msg}"
+                }
+            } catch (e: Exception) {
+                _updateProgress.value = "更新失败：${e.message ?: "未知错误"}"
+            } finally {
+                _updateRunning.value = false
+            }
         }
     }
 

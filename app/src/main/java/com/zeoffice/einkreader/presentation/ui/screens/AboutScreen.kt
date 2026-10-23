@@ -23,6 +23,8 @@ fun AboutScreen(nav: NavHostController, vm: MainViewModel) {
     val context = LocalContext.current
     val updateInfo by vm.updateInfo.collectAsState()
     val checking by vm.checkingUpdate.collectAsState()
+    val updateProgress by vm.updateProgress.collectAsState()
+    val updateRunning by vm.updateRunning.collectAsState()
     var useMirror by remember { mutableStateOf(true) }
 
     // 进入页面即检查一次
@@ -125,12 +127,29 @@ fun AboutScreen(nav: NavHostController, vm: MainViewModel) {
                                     info.apkUrl?.let { url -> vm.downloadAndInstallUpdate(url) }
                                         ?: Toast.makeText(context, "未找到 APK 下载地址", Toast.LENGTH_SHORT).show()
                                 },
+                                enabled = !updateRunning,
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary
                                 )
                             ) {
-                                Text("下载并安装 (${if (info.mirror) "镜像" else "官方"})")
+                                Text(
+                                    if (updateRunning) "处理中…"
+                                    else "下载并安装 (${if (info.mirror) "镜像" else "官方"})"
+                                )
+                            }
+                            // 下载/安装进度与结果提示 (不再因异常直接崩溃)
+                            if (updateRunning) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+                            updateProgress?.let { msg ->
+                                Text(
+                                    msg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (msg.contains("失败") || msg.contains("不一致"))
+                                        MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                         info != null -> Text(
