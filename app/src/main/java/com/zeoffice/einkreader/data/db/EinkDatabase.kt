@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -48,11 +48,15 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
-        /** v4 → v5: reading_settings 新增电纸书适配字段 (einkMode / pageKeyAction) */
+        /** v4 → v5: reading_settings 新增电纸书适配字段 (einkMode / pageKeyAction), 幂等 (列已存在则跳过) */
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE reading_settings ADD COLUMN einkMode INTEGER NOT NULL DEFAULT 0")
-                db.execSQL("ALTER TABLE reading_settings ADD COLUMN pageKeyAction TEXT NOT NULL DEFAULT 'prev_next'")
+                if (!db.hasColumn("reading_settings", "einkMode")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN einkMode INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("reading_settings", "pageKeyAction")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN pageKeyAction TEXT NOT NULL DEFAULT 'prev_next'")
+                }
             }
         }
 
@@ -70,4 +74,22 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
     }
+}
+
+/** 判断某表是否已存在指定列 (用于迁移的幂等保护) */
+private fun SupportSQLiteDatabase.hasColumn(table: String, column: String): Boolean {
+    var found = false
+    val cursor = query("PRAGMA table_info($table)")
+    try {
+        val nameIndex = cursor.getColumnIndex("name")
+        while (cursor.moveToNext()) {
+            if (nameIndex >= 0 && cursor.getString(nameIndex) == column) {
+                found = true
+                break
+            }
+        }
+    } finally {
+        cursor.close()
+    }
+    return found
 }
