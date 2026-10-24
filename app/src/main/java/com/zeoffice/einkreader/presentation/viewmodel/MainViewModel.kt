@@ -15,6 +15,8 @@ import com.zeoffice.einkreader.data.repository.BookmarkRepository
 import com.zeoffice.einkreader.data.repository.CloudRepository
 import com.zeoffice.einkreader.data.repository.DictionaryRepository
 import com.zeoffice.einkreader.data.repository.SettingsRepository
+import com.zeoffice.einkreader.data.toDomain
+import com.zeoffice.einkreader.utils.EinkDeviceDetector
 import com.zeoffice.einkreader.domain.import.BookImporter
 import com.zeoffice.einkreader.domain.import.CoverFactory
 import com.zeoffice.einkreader.webdav.WebDavClient
@@ -151,7 +153,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val vmScope = CoroutineScope(viewModelScope.coroutineContext + crashHandler)
 
     init {
-        vmScope.launch { _settings.value = settingsRepo.getSettings() }
+        vmScope.launch {
+            val entity = settingsRepo.getEntity()
+            // 首次启动（无存档）时，若识别到墨水屏设备则默认开启电纸书模式
+            val s = entity?.toDomain()
+                ?: ReadingSettings().copy(einkMode = EinkDeviceDetector.recommendEink())
+            _settings.value = s
+            if (entity == null) settingsRepo.saveSettings(s)
+        }
         loadBooks()
         loadAccounts()
         ensureCovers()

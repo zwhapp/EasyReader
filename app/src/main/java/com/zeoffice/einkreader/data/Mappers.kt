@@ -6,11 +6,11 @@ import com.zeoffice.einkreader.domain.model.*
 // ---- ReadingSettings ----
 fun ReadingSettingsEntity.toDomain() = ReadingSettings(
     fontSizeSp, lineSpacing, paragraphSpacing, marginHorizontalDp, marginVerticalDp,
-    theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn
+    theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn, einkMode, pageKeyAction
 )
 fun ReadingSettings.toEntity() = ReadingSettingsEntity(
     id = 1, fontSizeSp, lineSpacing, paragraphSpacing, marginHorizontalDp, marginVerticalDp,
-    theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn
+    theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn, einkMode, pageKeyAction
 )
 
 // ---- Bookmark ----

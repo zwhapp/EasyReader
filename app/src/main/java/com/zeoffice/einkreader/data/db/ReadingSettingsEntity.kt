@@ -19,5 +19,7 @@ data class ReadingSettingsEntity(
     val pageTurn: String,       // horizontal / vertical / scroll
     val textAlign: String,      // left / justify
     val brightness: Float,      // 1f = 不dim, <1 越暗
-    val keepScreenOn: Boolean
+    val keepScreenOn: Boolean,
+    val einkMode: Boolean,      // 电纸书模式 (总开关)
+    val pageKeyAction: String   // off / prev_next / next_prev
 )

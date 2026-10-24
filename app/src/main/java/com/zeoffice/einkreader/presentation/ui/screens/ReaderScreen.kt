@@ -22,12 +22,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavHostController
+import android.view.KeyEvent
 import com.zeoffice.einkreader.domain.model.BookFormat
 import com.zeoffice.einkreader.domain.model.Bookmark
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import com.zeoffice.einkreader.reader.PdfReaderView
 import com.zeoffice.einkreader.reader.ReaderView
+import com.zeoffice.einkreader.utils.PageKeyBridge
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,7 +71,7 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         val p = vm.parsedBook.value ?: return
         if (p.chapters.isEmpty()) return
         val ch = p.chapters.getOrElse(chapterIdx.value) { p.chapters.first() }
-        rv.configure(vm.settings.value, theme.background.toArgb(), theme.onBackground.toArgb())
+        rv.configure(vm.settings.value, theme.background.toArgb(), theme.onBackground.toArgb(), settings.einkMode)
         rv.setChapter(chapterIdx.value, ch.text)
         if (gotoLast) rv.setPage(rv.totalPages - 1)
         else rv.setPage(pageIdx.value.coerceIn(0, (rv.totalPages - 1).coerceAtLeast(0)))
@@ -135,6 +137,27 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
             applyReader()
             saveProgress()
         }
+    }
+
+    // 物理翻页键：阅读态注册处理器，按设置映射上下键为翻页；菜单/弹窗打开时屏蔽翻页但消费按键
+    DisposableEffect(Unit) {
+        PageKeyBridge.handler = handler@{ keyCode, isDown, repeat ->
+            val s = vm.settings.value
+            if (s.pageKeyAction == "off") return@handler false
+            // 菜单/弹窗打开时不翻页，但消费按键避免穿透到系统
+            if (menuOpen.value || sheet.value != null || showExit) return@handler true
+            val isPrev = when (keyCode) {
+                KeyEvent.KEYCODE_PAGE_UP -> s.pageKeyAction == "prev_next"
+                KeyEvent.KEYCODE_PAGE_DOWN -> s.pageKeyAction != "prev_next"
+                else -> return@handler false
+            }
+            val delta = if (isPrev) -1 else 1
+            if (isDown && !repeat) {
+                if (isPdf) turnPdf(delta) else turnPage(delta)
+            }
+            true
+        }
+        onDispose { PageKeyBridge.handler = null }
     }
 
     // 文本阅读器：随 parsed / settings / 章节 重排（页内翻页不触发整章重排）
@@ -235,7 +258,8 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         }
 
         // 应用内亮度调暗（覆盖在阅读区之上）
-        if (settings.brightness < 1f) {
+        // 电纸书模式下禁用：半透明黑层会在墨水屏上留下明显灰影，且调暗意义不大（交予系统亮度）
+        if (settings.brightness < 1f && !settings.einkMode) {
             Box(
                 Modifier.fillMaxSize()
                     .background(Color.Black.copy(alpha = (1f - settings.brightness).coerceIn(0f, 0.9f)))

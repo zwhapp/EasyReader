@@ -199,6 +199,50 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                     onCheckedChange = { vm.saveSettings(settings.copy(keepScreenOn = it)) }
                 )
             }
+
+            Divider()
+
+            // ===== 电纸书（墨水屏）适配 =====
+            Text("电纸书适配", style = MaterialTheme.typography.titleSmall)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("电纸书模式", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "关闭动画/水波纹、纯黑白高对比、支持物理翻页键",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.einkMode,
+                    onCheckedChange = { vm.saveSettings(settings.copy(einkMode = it)) }
+                )
+            }
+
+            // 物理翻页键映射
+            Text("物理翻页键", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "off" to "关闭",
+                    "prev_next" to "上页·下页",
+                    "next_prev" to "下页·上页"
+                ).forEach { (key, label) ->
+                    FilterChip(
+                        selected = settings.pageKeyAction == key,
+                        onClick = { vm.saveSettings(settings.copy(pageKeyAction = key)) },
+                        label = { Text(label) }
+                    )
+                }
+            }
+            Text(
+                "将设备实体上下翻页键映射为内容翻页。若方向反了，请选「下页·上页」。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

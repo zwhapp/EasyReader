@@ -47,12 +47,15 @@ class ReaderView @JvmOverloads constructor(
     private var downX = 0f
     private var downY = 0f
 
-    fun configure(settings: ReadingSettings, bg: Int, text: Int) {
+    fun configure(settings: ReadingSettings, bg: Int, text: Int, eink: Boolean = false) {
         this.settings = settings
         this.bgColor = bg
         this.textColor = text
         textPaint.color = text
         textPaint.textSize = settings.fontSizeSp * scaledDensity
+        // 墨水屏灰度有限：关闭抗锯齿与抖动，避免灰边残影，提升文字清晰度与对比度
+        textPaint.isAntiAlias = !eink
+        textPaint.isDither = !eink
         textPaint.typeface = when (settings.fontFamily) {
             "serif", "song" -> Typeface.SERIF
             else -> Typeface.DEFAULT

@@ -13,6 +13,16 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// 百度网盘凭据 — 从 local.properties 读取 (已 gitignore, 不入库), 编译期注入 BuildConfig。
+// 未配置时相关功能自动禁用, 避免将第三方密钥写入源码仓库 (公开分享/发布风险)。
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val baiduAppId = (localProps.getProperty("BAIDU_APP_ID") ?: "").replace("\"", "")
+val baiduAppKey = (localProps.getProperty("BAIDU_APP_KEY") ?: "").replace("\"", "")
+val baiduSecret = (localProps.getProperty("BAIDU_SECRET_KEY") ?: "").replace("\"", "")
+
 android {
     namespace = "com.zeoffice.einkreader"
     compileSdk = 35
@@ -21,8 +31,12 @@ android {
         applicationId = "com.zeoffice.einkreader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.3.4"
+        versionCode = 13
+        versionName = "0.4.0"
+
+        buildConfigField("String", "BAIDU_APP_ID", "\"$baiduAppId\"")
+        buildConfigField("String", "BAIDU_APP_KEY", "\"$baiduAppKey\"")
+        buildConfigField("String", "BAIDU_SECRET_KEY", "\"$baiduSecret\"")
         multiDexEnabled = true
     }
 
@@ -61,6 +75,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
