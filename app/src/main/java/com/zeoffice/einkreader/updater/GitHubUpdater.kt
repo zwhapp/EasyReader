@@ -77,11 +77,25 @@ class GitHubUpdater(
             } catch (e: Exception) {
                 throw Exception("解析版本信息失败（响应格式异常）")
             } ?: throw Exception("解析版本信息失败（响应格式异常）")
+
+            // 本请求响应已包含 assets, 直接提取 APK 下载地址, 无需二次请求。
+            // 旧实现二次调用 /releases/tags/{tag}, 在镜像模式下常失败 (返回 null),
+            // 导致界面误报「未找到 APK 下载地址」。
+            val assets = (map["assets"] as? List<*>)?.filterIsInstance<Map<String, *>>()
+                ?: emptyList()
+            val apkRaw = assets.firstOrNull { a ->
+                val n = a["name"] as? String ?: ""
+                n.endsWith(".apk", ignoreCase = true)
+            }?.get("browser_download_url") as? String
+            val apkUrl = apkRaw?.let { if (mirror) "${mirrorBase}$it" else it }
+
             GitHubRelease(
                 tag = map["tag_name"] as? String ?: "",
                 name = map["name"] as? String ?: "",
                 body = map["body"] as? String ?: "",
-                publishedAt = map["published_at"] as? String ?: ""
+                publishedAt = map["published_at"] as? String ?: "",
+                apkUrl = apkUrl,
+                htmlUrl = map["html_url"] as? String
             )
         }
     }
@@ -259,7 +273,11 @@ data class GitHubRelease(
     val tag: String,
     val name: String,
     val body: String,
-    val publishedAt: String
+    val publishedAt: String,
+    /** APK 下载地址 (已从 /releases/latest 的 assets 直接提取, 镜像模式含镜像前缀) */
+    val apkUrl: String? = null,
+    /** 发布页地址 (用于无法自动获取 APK 时引导用户手动下载) */
+    val htmlUrl: String? = null
 )
 
 /** 安装引导结果 */

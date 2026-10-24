@@ -568,7 +568,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 _updateInfo.value = UpdateInfo(error = e.message ?: "检查更新失败", mirror = useMirror)
                 return@launch
             }
-            val apk = try {
+            // 优先使用 checkLatest 已解析的 APK 地址 (同一次成功请求),
+            // 仅在为空时 fallback 二次查询, 避免镜像下二次请求失败导致「未找到APK下载地址」
+            val apk = release.apkUrl ?: try {
                 updater.findApkAsset(release, useMirror)
             } catch (_: Exception) {
                 null

@@ -1,5 +1,7 @@
 package com.zeoffice.einkreader.presentation.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -122,21 +124,40 @@ fun AboutScreen(nav: NavHostController, vm: MainViewModel) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Button(
-                                onClick = {
-                                    info.apkUrl?.let { url -> vm.downloadAndInstallUpdate(url) }
-                                        ?: Toast.makeText(context, "未找到 APK 下载地址", Toast.LENGTH_SHORT).show()
-                                },
-                                enabled = !updateRunning,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                )
-                            ) {
+                            if (info.apkUrl != null) {
+                                Button(
+                                    onClick = { vm.downloadAndInstallUpdate(info.apkUrl) },
+                                    enabled = !updateRunning,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Text(
+                                        if (updateRunning) "处理中…"
+                                        else "下载并安装 (${if (info.mirror) "镜像" else "官方"})"
+                                    )
+                                }
+                            } else {
+                                // 自动获取 APK 失败时, 引导用户前往发布页手动下载, 而非只弹一句提示
                                 Text(
-                                    if (updateRunning) "处理中…"
-                                    else "下载并安装 (${if (info.mirror) "镜像" else "官方"})"
+                                    "未能自动获取安装包下载地址（可能因网络或镜像受限）。请前往发布页手动下载安装。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
                                 )
+                                Button(
+                                    onClick = {
+                                        val page = info.release?.htmlUrl
+                                            ?: "https://github.com/zwhapp/EasyReader/releases/latest"
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(page))
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("前往 GitHub 发布页下载")
+                                }
                             }
                             // 下载/安装进度与结果提示 (不再因异常直接崩溃)
                             if (updateRunning) {
@@ -182,7 +203,7 @@ fun AboutScreen(nav: NavHostController, vm: MainViewModel) {
             }
 
             Text(
-                "开源地址：github.com/zeoffice/einkreader",
+                "开源地址：github.com/zwhapp/EasyReader",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
