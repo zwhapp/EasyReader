@@ -206,7 +206,7 @@ class WebDavSyncManager(
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 failed++
                 errors.add("《${item.title}》: ${e.message ?: "失败"}")
             }
@@ -223,7 +223,7 @@ class WebDavSyncManager(
             )
             val ok = retry { client.uploadText(indexUrl, SyncEngine.buildIndex(mergedIndex)) }
             if (!ok) throw IOException("索引写入被服务器拒绝")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             errors.add("索引写入失败：${e.message ?: "未知错误"}（书籍文件可能已同步，下次将自动重试）")
         }
 

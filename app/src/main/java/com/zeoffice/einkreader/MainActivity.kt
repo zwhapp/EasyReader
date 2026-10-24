@@ -2,6 +2,7 @@ package com.zeoffice.einkreader
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import kotlinx.coroutines.flow.collect
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +47,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val nav: NavHostController = rememberNavController()
                     val vm: MainViewModel = viewModel()
+                    LaunchedEffect(Unit) {
+                        vm.globalError.collect { msg ->
+                            if (msg != null) {
+                                android.widget.Toast
+                                    .makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_LONG)
+                                    .show()
+                                vm.clearGlobalError()
+                            }
+                        }
+                    }
                     NavHost(navController = nav, startDestination = "library") {
                         composable("library") {
                             LibraryScreen(nav = nav, vm = vm)

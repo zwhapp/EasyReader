@@ -36,9 +36,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.util.Log
 
 sealed class ImportStatus {
     object Idle : ImportStatus()
@@ -131,17 +134,33 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
     private var syncJob: Job? = null
 
+    /**
+     * 全局未捕获协程异常通道。
+     * 此前本类大量 vmScope.launch 未加 try-catch, 任一未捕获异常都会直接杀掉进程
+     * (表现为"点一下就退出程序")。现统一用带 CoroutineExceptionHandler 的 vmScope 启动协程:
+     * 异常只记录日志 + 轻量提示, 不再崩溃。
+     */
+    private val _globalError = MutableStateFlow<String?>(null)
+    val globalError: StateFlow<String?> = _globalError.asStateFlow()
+    fun clearGlobalError() { _globalError.value = null }
+
+    private val crashHandler = CoroutineExceptionHandler { _, e ->
+        Log.e("EasyReader", "拦截未捕获的协程异常, 避免崩溃: ${e.message}", e)
+        _globalError.value = "操作出错：${e.message ?: e.javaClass.simpleName}（已记录）"
+    }
+    private val vmScope = CoroutineScope(viewModelScope.coroutineContext + crashHandler)
+
     init {
-        viewModelScope.launch { _settings.value = settingsRepo.getSettings() }
+        vmScope.launch { _settings.value = settingsRepo.getSettings() }
         loadBooks()
         loadAccounts()
         ensureCovers()
     }
 
-    fun loadBooks() = viewModelScope.launch { _books.value = bookRepo.getAllBooks() }
+    fun loadBooks() = vmScope.launch { _books.value = bookRepo.getAllBooks() }
 
     /** 老书补封面: coverPath 为空的书按格式生成 (EPUB 取内嵌图, PDF 渲染首页, 其余占位封面) */
-    private fun ensureCovers() = viewModelScope.launch(Dispatchers.IO) {
+    private fun ensureCovers() = vmScope.launch(Dispatchers.IO) {
         val list = bookRepo.getAllBooks()
         var changed = false
         for (b in list) {
@@ -165,15 +184,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         if (changed) loadBooks()
     }
-    fun loadAccounts() = viewModelScope.launch { _accounts.value = cloudRepo.getAll() }
+    fun loadAccounts() = vmScope.launch { _accounts.value = cloudRepo.getAll() }
 
-    fun saveSettings(s: ReadingSettings) = viewModelScope.launch {
+    fun saveSettings(s: ReadingSettings) = vmScope.launch {
         _settings.value = s
         settingsRepo.saveSettings(s)
     }
 
     /** 导入: 本机 (SAF ACTION_OPEN_DOCUMENT 单文件) */
-    fun importUri(uri: Uri, displayName: String) = viewModelScope.launch(Dispatchers.IO) {
+    fun importUri(uri: Uri, displayName: String) = vmScope.launch(Dispatchers.IO) {
         try {
             _importStatus.value = ImportStatus.Importing("正在导入 $displayName …")
             importSingle(uri, displayName, source = "local")
@@ -188,7 +207,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 导入: SAF 文件夹批量 (ACTION_OPEN_DOCUMENT_TREE)
      * 用户可选中百度网盘等 DocumentsProvider 的目录, 逐个复制到私有目录后加入书架
      */
-    fun importTree(treeUri: Uri) = viewModelScope.launch(Dispatchers.IO) {
+    fun importTree(treeUri: Uri) = vmScope.launch(Dispatchers.IO) {
         try {
             _importStatus.value = ImportStatus.Importing("正在扫描文件夹 …")
             val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(app, treeUri)
@@ -269,7 +288,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 导入: 云盘 / WebDAV */
     fun importCloud(account: CloudAccount, file: CloudFile) {
         cloudImportJob?.cancel()
-        cloudImportJob = viewModelScope.launch(Dispatchers.IO) {
+        cloudImportJob = vmScope.launch(Dispatchers.IO) {
             var dest: File? = null
             try {
                 _importStatus.value = ImportStatus.Importing("正在下载 ${file.name} …")
@@ -334,7 +353,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 打开书籍 (PDF 返回 null, 由阅读器用 PdfRenderer) */
-    fun openBook(book: BookEntity) = viewModelScope.launch(Dispatchers.IO) {
+    fun openBook(book: BookEntity) = vmScope.launch(Dispatchers.IO) {
         _openError.value = null
         try {
             val format = BookFormat.valueOf(book.format)
@@ -374,7 +393,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         chapterIndex: Int,
         charOffset: Int,
         progressPercent: Int
-    ) = viewModelScope.launch(Dispatchers.IO) {
+    ) = vmScope.launch(Dispatchers.IO) {
         val b = bookRepo.getBook(bookId) ?: return@launch
         bookRepo.update(
             b.copy(
@@ -387,23 +406,23 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         loadBooks()
     }
 
-    fun deleteBook(book: BookEntity) = viewModelScope.launch(Dispatchers.IO) {
+    fun deleteBook(book: BookEntity) = vmScope.launch(Dispatchers.IO) {
         runCatching { File(book.filePath).delete() }
         bookRepo.delete(book)
         loadBooks()
     }
 
     /** 书签 */
-    fun loadBookmarks(bookId: Int) = viewModelScope.launch(Dispatchers.IO) {
+    fun loadBookmarks(bookId: Int) = vmScope.launch(Dispatchers.IO) {
         _bookmarks.value = bookmarkRepo.getByBook(bookId)
     }
 
-    fun addBookmark(b: Bookmark) = viewModelScope.launch(Dispatchers.IO) {
+    fun addBookmark(b: Bookmark) = vmScope.launch(Dispatchers.IO) {
         bookmarkRepo.add(b)
         loadBookmarks(b.bookId)
     }
 
-    fun removeBookmark(id: Int, bookId: Int) = viewModelScope.launch(Dispatchers.IO) {
+    fun removeBookmark(id: Int, bookId: Int) = vmScope.launch(Dispatchers.IO) {
         bookmarkRepo.remove(id)
         loadBookmarks(bookId)
     }
@@ -415,7 +434,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun startBaiduQrLogin() {
         baiduLoginJob?.cancel()
         _baiduLogin.value = BaiduLoginState.Idle
-        baiduLoginJob = viewModelScope.launch(Dispatchers.IO) {
+        baiduLoginJob = vmScope.launch(Dispatchers.IO) {
             try {
                 val oauth = com.zeoffice.einkreader.cloud.BaiduOAuth()
                 val dc = oauth.requestDeviceCode()
@@ -475,7 +494,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return id
     }
 
-    fun deleteAccount(id: Int) = viewModelScope.launch(Dispatchers.IO) {
+    fun deleteAccount(id: Int) = vmScope.launch(Dispatchers.IO) {
         cloudRepo.delete(id)
         loadAccounts()
     }
@@ -500,7 +519,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         syncFiles: Boolean
     ) {
         syncJob?.cancel()
-        syncJob = viewModelScope.launch(Dispatchers.IO) {
+        syncJob = vmScope.launch(Dispatchers.IO) {
             _syncStatus.value = SyncStatus.Syncing("正在连接服务器…", 0, 0)
             try {
                 val manager = WebDavSyncManager(app, bookRepo, db.syncStateDao())
@@ -512,7 +531,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _syncStatus.value = SyncStatus.Idle
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 _syncStatus.value = SyncStatus.Error(e.message ?: "同步失败")
             }
         }
@@ -526,7 +545,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 更新检查 — 无论成功失败都给出明确结果 (有新版 / 已最新 / 失败原因) */
-    fun checkUpdate(useMirror: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+    fun checkUpdate(useMirror: Boolean) = vmScope.launch(Dispatchers.IO) {
         _checkingUpdate.value = true
         try {
             val updater = GitHubUpdater(app)
@@ -561,7 +580,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun downloadAndInstallUpdate(apkUrl: String) {
         updateJob?.cancel()
-        updateJob = viewModelScope.launch(Dispatchers.IO) {
+        updateJob = vmScope.launch(Dispatchers.IO) {
             _updateRunning.value = true
             _updateProgress.value = "正在下载…"
             try {
