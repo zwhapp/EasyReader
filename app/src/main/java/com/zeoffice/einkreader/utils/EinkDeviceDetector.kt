@@ -41,5 +41,22 @@ object EinkDeviceDetector {
         safe { Build.BRAND }.lowercase().contains("bigme") &&
             safe { Build.MODEL }.lowercase().let { it.contains("b751") || it.contains("b-751") }
 
+    /**
+     * 给用户的设备识别提示文案（仅识别到墨水屏时返回非空），
+     * 用于「阅读设置 → 电纸书适配」分区说明，告知已为其默认开启适配。
+     */
+    fun deviceLabel(): String {
+        val model = safe { Build.MODEL }
+        return when {
+            isBigmeB751C() ->
+                "已识别为 Bigme B751C（7″ 彩墨屏电纸书），已为你默认开启电纸书模式与物理翻页键"
+            safe { Build.BRAND }.lowercase().contains("bigme") ->
+                "已识别为 Bigme 墨水屏设备，已为你默认开启电纸书模式与物理翻页键"
+            recommendEink() ->
+                "已识别为墨水屏设备（$model），已为你默认开启电纸书模式"
+            else -> ""
+        }
+    }
+
     private inline fun safe(block: () -> String): String = runCatching(block).getOrDefault("")
 }

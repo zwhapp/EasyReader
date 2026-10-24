@@ -22,6 +22,7 @@ import androidx.navigation.NavHostController
 import com.zeoffice.einkreader.domain.model.ReadingSettings
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
+import com.zeoffice.einkreader.utils.EinkDeviceDetector
 
 private val PREVIEW_TEXT = "夜幕低垂，江面泛起细碎的银光。读书的人合上书本，听见远处传来悠长的钟声——那是时间走过耳畔的声音。文字里藏着的山河与悲欢，都在这一刻静静沉淀。"
 
@@ -223,26 +224,64 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                 )
             }
 
-            // 物理翻页键映射
-            Text("物理翻页键", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                    "off" to "关闭",
-                    "prev_next" to "上页·下页",
-                    "next_prev" to "下页·上页"
-                ).forEach { (key, label) ->
-                    FilterChip(
-                        selected = settings.pageKeyAction == key,
-                        onClick = { vm.saveSettings(settings.copy(pageKeyAction = key)) },
-                        label = { Text(label) }
+            // ===== 物理翻页键（仅电纸书模式生效） =====
+            if (settings.einkMode) {
+                val devLabel = EinkDeviceDetector.deviceLabel()
+                if (devLabel.isNotBlank()) {
+                    Text(
+                        devLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
+                Text("物理翻页键", style = MaterialTheme.typography.titleSmall)
+
+                // 翻页键 / 方向键翻页（PAGE·DPAD，默认开）
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("翻页键 / 方向键翻页", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "PAGE_UP·DPAD_UP·左 = 上一页；PAGE_DOWN·DPAD_DOWN·右 = 下一页",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.pageKeyPageTurn,
+                        onCheckedChange = { vm.saveSettings(settings.copy(pageKeyPageTurn = it)) }
+                    )
+                }
+
+                // 音量键翻页（VOLUME，默认关，避免误触影响系统音量）
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("音量键翻页", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "VOLUME_UP = 上一页；VOLUME_DOWN = 下一页（开启后将屏蔽系统音量面板）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.volumeKeyPageTurn,
+                        onCheckedChange = { vm.saveSettings(settings.copy(volumeKeyPageTurn = it)) }
+                    )
+                }
+
+                Text(
+                    "固定方向映射，符合阅读习惯。仅在阅读界面生效，书库/设置等界面按键行为不变。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            Text(
-                "将设备实体上下翻页键映射为内容翻页。若方向反了，请选「下页·上页」。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

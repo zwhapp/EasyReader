@@ -17,5 +17,9 @@ data class ReadingSettings(
     val keepScreenOn: Boolean = true,
     // ===== 电纸书（墨水屏）适配 =====
     val einkMode: Boolean = false,      // 总开关: 关闭动画/水波纹、提高对比度、支持物理翻页键
-    val pageKeyAction: String = "prev_next" // off / prev_next(上=上一页,下=下一页) / next_prev(上=下一页,下=上一页)
+    @Deprecated("旧三态映射已拆分为下方两个独立开关，保留字段仅用于兼容老数据迁移")
+    val pageKeyAction: String = "prev_next", // 历史字段: off / prev_next / next_prev（不再被 UI 使用）
+    // 物理翻页键（电纸书专属）— 仅在 einkMode 开启时生效，普通手机不受影响
+    val volumeKeyPageTurn: Boolean = false,  // 音量键翻页: VOLUME_UP=上一页 / VOLUME_DOWN=下一页
+    val pageKeyPageTurn: Boolean = true     // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
 )

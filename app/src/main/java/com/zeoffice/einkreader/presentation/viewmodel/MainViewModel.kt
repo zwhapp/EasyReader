@@ -155,9 +155,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     init {
         vmScope.launch {
             val entity = settingsRepo.getEntity()
-            // 首次启动（无存档）时，若识别到墨水屏设备则默认开启电纸书模式
+            // 首次启动（无存档）时，若识别到墨水屏设备则默认开启电纸书模式与音量键翻页
             val s = entity?.toDomain()
-                ?: ReadingSettings().copy(einkMode = EinkDeviceDetector.recommendEink())
+                ?: ReadingSettings().copy(
+                    einkMode = EinkDeviceDetector.recommendEink(),
+                    volumeKeyPageTurn = EinkDeviceDetector.recommendEink()
+                )
             _settings.value = s
             if (entity == null) settingsRepo.saveSettings(s)
         }

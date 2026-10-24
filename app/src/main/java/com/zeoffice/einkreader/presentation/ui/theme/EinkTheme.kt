@@ -38,6 +38,46 @@ fun readerColorScheme(c: ReaderColors): ColorScheme =
         onSurfaceVariant = c.onBackground
     )
 
+/**
+ * 电纸书（墨水屏）全局灰阶主题 — 把所有 Material3 颜色角色降为灰阶，
+ * 去除彩色与色调阴影，最大限度降低墨水屏刷新残影、提升对比与文字清晰度。
+ * 仅作颜色角色替换，不改动布局/交互，符合「只优化不魔改」。
+ */
+fun einkColorScheme(): ColorScheme {
+    val base = lightColorScheme()
+    return base.copy(
+        primary = Color(0xFF000000),
+        onPrimary = Color(0xFFFFFFFF),
+        primaryContainer = Color(0xFFE0E0E0),
+        onPrimaryContainer = Color(0xFF000000),
+        inversePrimary = Color(0xFF000000),
+        secondary = Color(0xFF424242),
+        onSecondary = Color(0xFFFFFFFF),
+        secondaryContainer = Color(0xFFE0E0E0),
+        onSecondaryContainer = Color(0xFF000000),
+        tertiary = Color(0xFF424242),
+        onTertiary = Color(0xFFFFFFFF),
+        tertiaryContainer = Color(0xFFE0E0E0),
+        onTertiaryContainer = Color(0xFF000000),
+        background = Color(0xFFFFFFFF),
+        onBackground = Color(0xFF000000),
+        surface = Color(0xFFFFFFFF),
+        onSurface = Color(0xFF000000),
+        surfaceVariant = Color(0xFFECECEC),
+        onSurfaceVariant = Color(0xFF3A3A3A),
+        inverseSurface = Color(0xFF000000),
+        inverseOnSurface = Color(0xFFFFFFFF),
+        error = Color(0xFF000000),
+        onError = Color(0xFFFFFFFF),
+        errorContainer = Color(0xFFE0E0E0),
+        onErrorContainer = Color(0xFF000000),
+        outline = Color(0xFF9E9E9E),
+        outlineVariant = Color(0xFFCFCFCF),
+        scrim = Color(0xFF000000),
+        surfaceTint = Color(0xFFFFFFFF)
+    )
+}
+
 // 书库界面 (简洁白底)
 val LibraryBackground = Color(0xFFF4F4F2)
 val LibraryText = Color(0xFF222222)

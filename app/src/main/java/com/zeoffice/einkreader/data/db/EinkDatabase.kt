@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -60,13 +60,35 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 → v6: reading_settings 新增两个独立翻页键开关 (volumeKeyPageTurn / pageKeyPageTurn)。
+         * 兼容老数据 (pageKeyAction):
+         *  - 老用户曾选 'off'（关闭翻页）→ 两个开关都置 0，保持"关闭"语义；
+         *  - 老用户曾启用翻页 → pageKeyPageTurn 保持 1；若同时开启了电纸书模式，volumeKeyPageTurn 也置 1。
+         * 幂等 (列已存在则跳过 ALTER)，再用 UPDATE 修正默认值，保证任意起点都可安全升级。
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if (!db.hasColumn("reading_settings", "volumeKeyPageTurn")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN volumeKeyPageTurn INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("reading_settings", "pageKeyPageTurn")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN pageKeyPageTurn INTEGER NOT NULL DEFAULT 1")
+                }
+                // 老 'off' 用户：保持两个开关都关
+                db.execSQL("UPDATE reading_settings SET pageKeyPageTurn = 0 WHERE pageKeyAction = 'off'")
+                // 老启用用户：已开电纸书模式者，默认也开启音量键翻页
+                db.execSQL("UPDATE reading_settings SET volumeKeyPageTurn = 1 WHERE einkMode = 1 AND pageKeyAction <> 'off'")
+            }
+        }
+
         fun get(context: Context): EinkDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     EinkDatabase::class.java,
                     "eink_reader.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

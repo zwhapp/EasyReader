@@ -29,7 +29,7 @@ import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import com.zeoffice.einkreader.reader.PdfReaderView
 import com.zeoffice.einkreader.reader.ReaderView
-import com.zeoffice.einkreader.utils.PageKeyBridge
+import com.zeoffice.einkreader.utils.ReaderKeyDispatcher
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -139,25 +139,40 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         }
     }
 
-    // 物理翻页键：阅读态注册处理器，按设置映射上下键为翻页；菜单/弹窗打开时屏蔽翻页但消费按键
+    // 物理翻页键：阅读态注册处理器，按设置映射为翻页；菜单/弹窗打开时屏蔽翻页但消费按键
+    // 固定映射（与系统/厂商无关，符合"只优化不魔改"）：
+    //   VOLUME_UP / PAGE_UP / DPAD_UP / DPAD_LEFT  = 上一页
+    //   VOLUME_DOWN / PAGE_DOWN / DPAD_DOWN / DPAD_RIGHT = 下一页
+    // 仅 eink 模式 + 对应开关开启时拦截（普通手机/其它界面音量键、方向键照常工作）；
+    // 仅 ACTION_DOWN 且 repeatCount==0 时翻页（长按不连翻），DOWN/UP/repeat 全部消费，避免音量面板弹出
     DisposableEffect(Unit) {
-        PageKeyBridge.handler = handler@{ keyCode, isDown, repeat ->
+        ReaderKeyDispatcher.handler = handler@{ event ->
             val s = vm.settings.value
-            if (s.pageKeyAction == "off") return@handler false
-            // 菜单/弹窗打开时不翻页，但消费按键避免穿透到系统
+            if (!s.einkMode) return@handler false
+            val isVolume = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+                    event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+            val isPageKey = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
+                    event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
+                    event.keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+                    event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                    event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                    event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            // 该按键对应的开关未开启 → 不放行交由系统处理（如音量面板）
+            if (isVolume && !s.volumeKeyPageTurn) return@handler false
+            if (isPageKey && !s.pageKeyPageTurn) return@handler false
+            // 菜单/弹窗打开：消费按键但不翻页，避免穿透到系统
             if (menuOpen.value || sheet.value != null || showExit) return@handler true
-            val isPrev = when (keyCode) {
-                KeyEvent.KEYCODE_PAGE_UP -> s.pageKeyAction == "prev_next"
-                KeyEvent.KEYCODE_PAGE_DOWN -> s.pageKeyAction != "prev_next"
-                else -> return@handler false
+            val delta = when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT -> -1
+                else -> 1
             }
-            val delta = if (isPrev) -1 else 1
-            if (isDown && !repeat) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
                 if (isPdf) turnPdf(delta) else turnPage(delta)
             }
             true
         }
-        onDispose { PageKeyBridge.handler = null }
+        onDispose { ReaderKeyDispatcher.handler = null }
     }
 
     // 文本阅读器：随 parsed / settings / 章节 重排（页内翻页不触发整章重排）

@@ -9,10 +9,13 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -32,27 +35,40 @@ import com.zeoffice.einkreader.presentation.ui.screens.SettingsScreen
 import com.zeoffice.einkreader.presentation.ui.screens.SyncScreen
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.ui.theme.ReaderColors
+import com.zeoffice.einkreader.presentation.ui.theme.einkColorScheme
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
-import com.zeoffice.einkreader.utils.PageKeyBridge
+import com.zeoffice.einkreader.utils.ReaderKeyDispatcher
 
+@OptIn(ExperimentalFoundationApi::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // 用「白天」阅读主题作为全局基础配色 (书库/设置/关于), 阅读页内部另行套用所选主题
-            val base: ReaderColors = READER_THEMES["day"]!!
-            val colorScheme = androidx.compose.material3.lightColorScheme(
-                background = base.background,
-                onBackground = base.onBackground,
-                surface = base.surface,
-                primary = base.primary,
-                onSurface = base.onBackground,
-                surfaceVariant = base.surface,
-                onSurfaceVariant = base.onBackground
-            )
             val vm: MainViewModel = viewModel()
             val settings by vm.settings.collectAsState()
+            val eink = settings.einkMode
+            // 电纸书模式：全局灰阶主题（所有 Material3 颜色角色降为灰阶），降低刷新残影、提升对比
+            val colorScheme = if (eink) einkColorScheme() else {
+                val base: ReaderColors = READER_THEMES["day"]!!
+                androidx.compose.material3.lightColorScheme(
+                    background = base.background,
+                    onBackground = base.onBackground,
+                    surface = base.surface,
+                    primary = base.primary,
+                    onSurface = base.onBackground,
+                    surfaceVariant = base.surface,
+                    onSurfaceVariant = base.onBackground
+                )
+            }
+            // 电纸书模式关闭窗口切换动画（系统级 Activity 转场残影主因之一）
+            LaunchedEffect(settings.einkMode) {
+                if (settings.einkMode) window.setWindowAnimations(0)
+            }
             MaterialTheme(colorScheme = colorScheme) {
+                // 电纸书模式去除滚动过冲光晕（overscroll glow），避免边缘灰影
+                CompositionLocalProvider(
+                    LocalOverscrollConfiguration provides if (eink) null else LocalOverscrollConfiguration.current
+                ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -102,25 +118,22 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                }
             }
         }
     }
 
     /**
-     * 物理翻页键转发：仅当阅读界面已注册处理器且识别为翻页键时才消费，
-     * 避免影响书库/设置等其它界面。长按连发(repeat)在阅读界面侧统一忽略。
+     * 物理翻页键分发：在 Activity 最早阶段拦截电纸书实体翻页键。
+     * 音量键若不在 Activity 层消费，会下传到系统弹出音量面板，因此必须在 super 之前 return true。
+     * 仅当阅读界面已注册 [ReaderKeyDispatcher.handler] 且该处理器返回 true 时才消费事件，
+     * 其余界面（书库/设置）与系统音量、媒体键完全不受影响。
      */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (PageKeyBridge.isPageKey(keyCode) && PageKeyBridge.handler != null) {
-            if (PageKeyBridge.handler!!.invoke(keyCode, true, event.repeatCount > 0)) return true
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val h = ReaderKeyDispatcher.handler
+        if (h != null && ReaderKeyDispatcher.isInterceptableKey(event.keyCode)) {
+            if (h(event)) return true
         }
-        return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (PageKeyBridge.isPageKey(keyCode) && PageKeyBridge.handler != null) {
-            if (PageKeyBridge.handler!!.invoke(keyCode, false, event.repeatCount > 0)) return true
-        }
-        return super.onKeyUp(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 }

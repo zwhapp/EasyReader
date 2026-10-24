@@ -31,8 +31,8 @@ android {
         applicationId = "com.zeoffice.einkreader"
         minSdk = 24
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.4.1"
+        versionCode = 15
+        versionName = "0.4.2"
 
         buildConfigField("String", "BAIDU_APP_ID", "\"$baiduAppId\"")
         buildConfigField("String", "BAIDU_APP_KEY", "\"$baiduAppKey\"")
