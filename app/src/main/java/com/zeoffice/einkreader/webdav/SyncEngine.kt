@@ -5,7 +5,8 @@ import com.zeoffice.einkreader.data.db.SyncStateEntity
 import com.zeoffice.einkreader.domain.model.sync.*
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import com.google.gson.reflect.TypeToken
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import java.io.File
 import java.security.MessageDigest
 
@@ -21,14 +22,6 @@ object SyncEngine {
     const val BOOKS_FOLDER = "books"
 
     private val GSON: Gson = GsonBuilder().disableHtmlEscaping().create()
-
-    /**
-     * 显式捕获 LibraryIndex 的完整泛型类型 (含 List<RemoteBookEntry>)。
-     * 相比 fromJson(json, LibraryIndex::class.java), TypeToken 由匿名子类的
-     * 泛型父类签名提供类型信息, 不依赖字段反射签名; 配合 proguard keep 规则,
-     * 可避免 R8 混淆后把 books 解析成 List<LinkedTreeMap> 引发的 ClassCastException。
-     */
-    private val INDEX_TYPE = object : TypeToken<LibraryIndex>() {}.type
 
     /** 稳定身份键: sha1(标题\0作者\0格式) — 跨设备稳定匹配同一本书 */
     fun keyOf(title: String, author: String, format: String): String =
@@ -158,9 +151,63 @@ object SyncEngine {
     fun bookRelPath(key: String, format: String): String =
         "$BOOKS_FOLDER/$key.${extOf(format)}"
 
-    /** 解析服务器索引 JSON */
-    fun parseIndex(json: String): LibraryIndex =
-        GSON.fromJson(json, INDEX_TYPE) ?: LibraryIndex()
+    /**
+     * 解析服务器索引 JSON。
+     *
+     * 采用 JsonParser 手动解析, 不依赖 Gson 的泛型反射反序列化:
+     * R8 会剥离匿名 TypeToken 子类的泛型签名 (运行时抛 IllegalStateException:
+     * "TypeToken must be created with a type argument"), 也可能破坏字段泛型;
+     * 手动逐字段读取完全绕开泛型签名, 在混淆包中稳定可用。
+     */
+    fun parseIndex(json: String): LibraryIndex {
+        return try {
+            val root = JsonParser.parseString(json).asJsonObject
+            val booksArr = root.getAsJsonArray("books")
+            val books = ArrayList<RemoteBookEntry>()
+            if (booksArr != null) {
+                for (el in booksArr) {
+                    if (!el.isJsonObject) continue
+                    val o = el.asJsonObject
+                    val p = o.getAsJsonObject("progress")
+                    books.add(
+                        RemoteBookEntry(
+                            key = strOf(o, "key"),
+                            title = strOf(o, "title"),
+                            author = strOf(o, "author"),
+                            format = strOf(o, "format").ifBlank { "TXT" },
+                            file = strOf(o, "file"),
+                            size = longOf(o, "size"),
+                            updatedAt = longOf(o, "updatedAt"),
+                            progress = RemoteProgress(
+                                chapterIndex = intOf(p, "chapterIndex"),
+                                charOffset = intOf(p, "charOffset"),
+                                progressPercent = intOf(p, "progressPercent"),
+                                lastPage = intOf(p, "lastPage"),
+                                readingTimeSec = longOf(p, "readingTimeSec")
+                            )
+                        )
+                    )
+                }
+            }
+            val ver = intOf(root, "version")
+            LibraryIndex(
+                version = if (ver == 0) 1 else ver,
+                updatedAt = longOf(root, "updatedAt"),
+                books = books
+            )
+        } catch (e: Exception) {
+            LibraryIndex()
+        }
+    }
+
+    private fun strOf(o: JsonObject?, name: String): String =
+        o?.get(name)?.takeIf { !it.isJsonNull }?.asString ?: ""
+
+    private fun intOf(o: JsonObject?, name: String): Int =
+        o?.get(name)?.takeIf { !it.isJsonNull }?.asInt ?: 0
+
+    private fun longOf(o: JsonObject?, name: String): Long =
+        o?.get(name)?.takeIf { !it.isJsonNull }?.asLong ?: 0L
 
     /** 序列化索引为 JSON */
     fun buildIndex(index: LibraryIndex): String = GSON.toJson(index)

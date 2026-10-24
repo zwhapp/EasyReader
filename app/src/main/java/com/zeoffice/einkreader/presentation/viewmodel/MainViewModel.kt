@@ -532,7 +532,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 _syncStatus.value = SyncStatus.Idle
                 throw e
             } catch (e: Throwable) {
-                _syncStatus.value = SyncStatus.Error(e.message ?: "同步失败")
+                Log.e("EasyReader", "同步失败", e)
+                _syncStatus.value = SyncStatus.Error(e.message ?: e.javaClass.simpleName)
             }
         }
     }

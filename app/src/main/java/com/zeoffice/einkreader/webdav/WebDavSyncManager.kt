@@ -155,6 +155,19 @@ class WebDavSyncManager(
                                         bookRepo.update(it.copy(coverPath = coverFile.absolutePath))
                                     }
                                 }
+                                // 记录同步基线: 否则下次同步会把"刚下载的书"误判为两端均改动(冲突)
+                                syncStateDao.upsert(
+                                    SyncStateEntity(
+                                        item.key,
+                                        SyncEngine.signature(
+                                            rv.progress.chapterIndex, rv.progress.charOffset,
+                                            rv.progress.progressPercent, rv.progress.lastPage,
+                                            rv.progress.readingTimeSec, dest.lastModified(), dest.length()
+                                        ),
+                                        rv.updatedAt,
+                                        System.currentTimeMillis()
+                                    )
+                                )
                                 pulled++
                                 if (item.conflict) {
                                     conflicts++
@@ -183,8 +196,18 @@ class WebDavSyncManager(
                                     remotePath = url
                                 )
                             )
+                            // 基线用"同步后"的签名 (文件可能已被重新下载), 否则下次会误判为本地改动
                             syncStateDao.upsert(
-                                SyncStateEntity(item.key, local.signature, rv.updatedAt, System.currentTimeMillis())
+                                SyncStateEntity(
+                                    item.key,
+                                    SyncEngine.signature(
+                                        rv.progress.chapterIndex, rv.progress.charOffset,
+                                        rv.progress.progressPercent, rv.progress.lastPage,
+                                        rv.progress.readingTimeSec, file.lastModified(), file.length()
+                                    ),
+                                    rv.updatedAt,
+                                    System.currentTimeMillis()
+                                )
                             )
                             updated++
                             if (item.conflict) {
