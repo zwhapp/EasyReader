@@ -130,6 +130,8 @@ class MainActivity : ComponentActivity() {
      * 其余界面（书库/设置）与系统音量、媒体键完全不受影响。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // 诊断模式：对每个按键弹 Toast 显示原始 keyCode / action（含未被拦截的未知键）
+        ReaderKeyDispatcher.showDebugToast(this, event)
         val h = ReaderKeyDispatcher.handler
         if (h != null && ReaderKeyDispatcher.isInterceptableKey(event.keyCode)) {
             if (h(event)) return true

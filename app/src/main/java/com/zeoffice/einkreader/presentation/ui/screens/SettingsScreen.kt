@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -275,6 +276,50 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                         onCheckedChange = { vm.saveSettings(settings.copy(volumeKeyPageTurn = it)) }
                     )
                 }
+
+                // 按键诊断：开启后实体键弹 Toast 显示 keyCode，用于排查翻页键真实键值
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("按键诊断（显示键值）", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "开启后按任意实体键会弹 Toast 显示 keyCode，便于排查翻页键",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = settings.keyDebug,
+                        onCheckedChange = { vm.saveSettings(settings.copy(keyDebug = it)) }
+                    )
+                }
+
+                // 自定义兼容键值（适配厂商非常规按键）
+                Text("自定义翻页键值（高级）", style = MaterialTheme.typography.titleSmall)
+                OutlinedTextField(
+                    value = settings.customPrevKeys,
+                    onValueChange = { vm.saveSettings(settings.copy(customPrevKeys = it)) },
+                    label = { Text("上一页键值（逗号分隔，如 87,269）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                OutlinedTextField(
+                    value = settings.customNextKeys,
+                    onValueChange = { vm.saveSettings(settings.copy(customNextKeys = it)) },
+                    label = { Text("下一页键值（逗号分隔，如 88,270）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "适用于厂商自定义键值（默认已含常见媒体/导航键 87/88/269/270）。先用「按键诊断」看真实键值，再填到这里即可适配，无需更新 App。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
                 Text(
                     "固定方向映射，符合阅读习惯。仅在阅读界面生效，书库/设置等界面按键行为不变。",

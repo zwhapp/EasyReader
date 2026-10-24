@@ -17,6 +17,7 @@ import com.zeoffice.einkreader.data.repository.DictionaryRepository
 import com.zeoffice.einkreader.data.repository.SettingsRepository
 import com.zeoffice.einkreader.data.toDomain
 import com.zeoffice.einkreader.utils.EinkDeviceDetector
+import com.zeoffice.einkreader.utils.ReaderKeyDispatcher
 import com.zeoffice.einkreader.domain.import.BookImporter
 import com.zeoffice.einkreader.domain.import.CoverFactory
 import com.zeoffice.einkreader.webdav.WebDavClient
@@ -162,6 +163,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     volumeKeyPageTurn = EinkDeviceDetector.recommendEink()
                 )
             _settings.value = s
+            applyKeyConfig(s)
             if (entity == null) settingsRepo.saveSettings(s)
         }
         loadBooks()
@@ -200,8 +202,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun saveSettings(s: ReadingSettings) = vmScope.launch {
         _settings.value = s
+        applyKeyConfig(s)
         settingsRepo.saveSettings(s)
     }
+
+    /** 把自定义兼容键值 / 诊断开关同步到物理翻页键分发器 */
+    private fun applyKeyConfig(s: ReadingSettings) {
+        ReaderKeyDispatcher.debugRaw = s.keyDebug
+        ReaderKeyDispatcher.customPrevKeys = parseKeyList(s.customPrevKeys)
+        ReaderKeyDispatcher.customNextKeys = parseKeyList(s.customNextKeys)
+    }
+
+    /** 将逗号分隔的整数串解析为键值集合（忽略非法项） */
+    private fun parseKeyList(text: String): Set<Int> =
+        text.split(',').mapNotNull { it.trim().toIntOrNull() }.toSet()
 
     /** 导入: 本机 (SAF ACTION_OPEN_DOCUMENT 单文件) */
     fun importUri(uri: Uri, displayName: String) = vmScope.launch(Dispatchers.IO) {

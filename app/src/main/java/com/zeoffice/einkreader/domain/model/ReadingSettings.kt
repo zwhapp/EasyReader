@@ -21,5 +21,9 @@ data class ReadingSettings(
     val pageKeyAction: String = "prev_next", // 历史字段: off / prev_next / next_prev（不再被 UI 使用）
     // 物理翻页键（电纸书专属）— 仅在 einkMode 开启时生效，普通手机不受影响
     val volumeKeyPageTurn: Boolean = false,  // 音量键翻页: VOLUME_UP=上一页 / VOLUME_DOWN=下一页
-    val pageKeyPageTurn: Boolean = true     // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
+    val pageKeyPageTurn: Boolean = true,    // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
+    // 自定义兼容键值（逗号分隔整数）：适配厂商非常规按键。默认预置常见媒体/导航键（87/88/269/270）
+    val customPrevKeys: String = "87,269",  // 上一页自定义键
+    val customNextKeys: String = "88,270",  // 下一页自定义键
+    val keyDebug: Boolean = false           // 按键诊断：开启后实体键弹 Toast 显示 keyCode
 )

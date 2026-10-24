@@ -23,5 +23,8 @@ data class ReadingSettingsEntity(
     val einkMode: Boolean,      // 电纸书模式 (总开关)
     val pageKeyAction: String,  // 历史字段: off / prev_next / next_prev（已弃用，仅保留用于老数据迁移读取）
     val volumeKeyPageTurn: Boolean, // 音量键翻页: VOLUME_UP=上一页 / VOLUME_DOWN=下一页（仅 eink 模式生效）
-    val pageKeyPageTurn: Boolean   // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
+    val pageKeyPageTurn: Boolean,  // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
+    val customPrevKeys: String,    // 上一页自定义兼容键值（逗号分隔，默认 87,269）
+    val customNextKeys: String,    // 下一页自定义兼容键值（逗号分隔，默认 88,270）
+    val keyDebug: Boolean          // 按键诊断开关
 )

@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -82,13 +82,32 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 → v7: reading_settings 新增自定义兼容键值（customPrevKeys / customNextKeys）与按键诊断开关（keyDebug）。
+         * 预置常见媒体/导航键（87/88/269/270）作为默认兼容键值，提高厂商非常规键值一次命中率。
+         * 幂等 (列已存在则跳过 ALTER)；NOT NULL 列带 DEFAULT，SQLite 会自动把默认值写入已有行。
+         */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if (!db.hasColumn("reading_settings", "customPrevKeys")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN customPrevKeys TEXT NOT NULL DEFAULT '87,269'")
+                }
+                if (!db.hasColumn("reading_settings", "customNextKeys")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN customNextKeys TEXT NOT NULL DEFAULT '88,270'")
+                }
+                if (!db.hasColumn("reading_settings", "keyDebug")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN keyDebug INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
         fun get(context: Context): EinkDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     EinkDatabase::class.java,
                     "eink_reader.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

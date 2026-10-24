@@ -140,35 +140,25 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
     }
 
     // 物理翻页键：阅读态注册处理器，按设置映射为翻页；菜单/弹窗打开时屏蔽翻页但消费按键
-    // 固定映射（与系统/厂商无关，符合"只优化不魔改"）：
-    //   VOLUME_UP / PAGE_UP / DPAD_UP / DPAD_LEFT  = 上一页
-    //   VOLUME_DOWN / PAGE_DOWN / DPAD_DOWN / DPAD_RIGHT = 下一页
-    // 仅 eink 模式 + 对应开关开启时拦截（普通手机/其它界面音量键、方向键照常工作）；
+    // 映射（标准 + 自定义，符合"只优化不魔改"）：
+    //   标准：VOLUME_UP / PAGE_UP / DPAD_UP / DPAD_LEFT = 上一页；其余 = 下一页
+    //   自定义：设置里 customPrevKeys / customNextKeys（适配厂商非常规键值）
+    // 仅 eink 模式 + 对应开关开启时拦截（普通手机/其它界面按键照常工作）；
     // 仅 ACTION_DOWN 且 repeatCount==0 时翻页（长按不连翻），DOWN/UP/repeat 全部消费，避免音量面板弹出
     DisposableEffect(Unit) {
         ReaderKeyDispatcher.handler = handler@{ event ->
             val s = vm.settings.value
             if (!s.einkMode) return@handler false
-            val isVolume = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
-                    event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
-            val isPageKey = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
-                    event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
-                    event.keyCode == KeyEvent.KEYCODE_DPAD_UP ||
-                    event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
-                    event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-                    event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+            val dir = ReaderKeyDispatcher.keyDir(event.keyCode)
+            if (dir == 0) return@handler false
+            val isVolume = ReaderKeyDispatcher.isVolumeKey(event.keyCode)
             // 该按键对应的开关未开启 → 不放行交由系统处理（如音量面板）
             if (isVolume && !s.volumeKeyPageTurn) return@handler false
-            if (isPageKey && !s.pageKeyPageTurn) return@handler false
+            if (!isVolume && !s.pageKeyPageTurn) return@handler false
             // 菜单/弹窗打开：消费按键但不翻页，避免穿透到系统
             if (menuOpen.value || sheet.value != null || showExit) return@handler true
-            val delta = when (event.keyCode) {
-                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP,
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT -> -1
-                else -> 1
-            }
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                if (isPdf) turnPdf(delta) else turnPage(delta)
+                if (isPdf) turnPdf(dir) else turnPage(dir)
             }
             true
         }
