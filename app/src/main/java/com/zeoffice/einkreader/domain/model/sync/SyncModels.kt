@@ -43,6 +43,18 @@ data class RemoteProgress(
     val readingTimeSec: Long = 0
 )
 
+/**
+ * 远程书签 / 笔记 (library.json 内嵌, 随所属书籍条目一起同步)。
+ * 不包含本地自增 id —— 跨设备用 (chapterIndex,charOffset,quote) 作稳定去重键。
+ */
+data class RemoteBookmark(
+    val chapterIndex: Int = 0,
+    val charOffset: Int = 0,
+    val quote: String = "",
+    val note: String = "",
+    val createdAt: Long = 0
+)
+
 /** 远程书籍条目 (library.json 的一项) */
 data class RemoteBookEntry(
     val key: String,
@@ -54,7 +66,9 @@ data class RemoteBookEntry(
     val size: Long = 0,
     /** 本条最近更新时间 (毫秒) — 用于冲突检测 */
     val updatedAt: Long = 0,
-    val progress: RemoteProgress = RemoteProgress()
+    val progress: RemoteProgress = RemoteProgress(),
+    /** 该书签与笔记列表 (随书籍条目一并同步, 追加合并语义) */
+    val bookmarks: List<RemoteBookmark> = emptyList()
 )
 
 /** 服务器书库索引 (library.json) */

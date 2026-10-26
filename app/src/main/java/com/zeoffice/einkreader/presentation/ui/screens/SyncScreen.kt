@@ -16,8 +16,8 @@ import com.zeoffice.einkreader.domain.model.sync.*
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 
 /**
- * WebDAV 双向同步 — 书籍文件与阅读进度。
- * 支持: 账户选择 / 方向(双向·仅上传·仅下载) / 冲突策略 / 书籍文件开关 / 进度 / 结果汇总 / 重试。
+ * WebDAV 双向同步 — 书籍文件、阅读进度与书签/笔记。
+ * 支持: 账户选择 / 方向(双向·仅上传·仅下载) / 冲突策略 / 书籍文件开关 / 书签与笔记开关 / 结果汇总 / 重试。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +37,7 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
     var direction by remember { mutableStateOf(SyncDirection.TWO_WAY) }
     var policy by remember { mutableStateOf(ConflictPolicy.NEWER_WINS) }
     var syncFiles by remember { mutableStateOf(true) }
+    var syncBookmarks by remember { mutableStateOf(true) }
     var showPolicy by remember { mutableStateOf(false) }
 
     val isSyncing = syncStatus is SyncStatus.Syncing
@@ -160,10 +161,29 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
 
                     HorizontalDivider()
 
+                    // 同步书签与笔记开关
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("同步书签与笔记", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "关闭后仅同步书籍与进度，不同步划线/批注",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = syncBookmarks, onCheckedChange = { syncBookmarks = it })
+                    }
+
+                    HorizontalDivider()
+
                     Button(
                         onClick = {
                             selectedAccount?.let { acc ->
-                                vm.syncLibrary(acc, direction, policy, syncFiles)
+                                vm.syncLibrary(acc, direction, policy, syncFiles, syncBookmarks)
                             }
                         },
                         enabled = !isSyncing && selectedAccount != null,

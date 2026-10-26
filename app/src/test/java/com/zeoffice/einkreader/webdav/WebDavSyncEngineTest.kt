@@ -120,4 +120,39 @@ class WebDavSyncEngineTest {
         assertEquals("books/k1.epub", SyncEngine.bookRelPath("k1", "EPUB"))
         assertEquals("books/k2.azw3", SyncEngine.bookRelPath("k2", "AZW3"))
     }
+
+    @Test fun index_roundTrip_withBookmarks() {
+        val bm = RemoteBookmark(
+            chapterIndex = 3, charOffset = 120, quote = "划线文本", note = "我的批注", createdAt = 999
+        )
+        val idx = LibraryIndex(
+            version = 1, updatedAt = 123,
+            books = listOf(
+                RemoteBookEntry(
+                    key = "k1", title = "T", author = "A", format = "EPUB",
+                    file = "books/k1.epub", size = 10, updatedAt = 456,
+                    progress = RemoteProgress(2, 30, 55, 0, 120),
+                    bookmarks = listOf(bm)
+                )
+            )
+        )
+        val json = SyncEngine.buildIndex(idx)
+        assertTrue(json.contains("\"bookmarks\""))
+        val parsed = SyncEngine.parseIndex(json)
+        val b = parsed.books[0]
+        assertEquals(1, b.bookmarks.size)
+        val p = b.bookmarks[0]
+        assertEquals(3, p.chapterIndex)
+        assertEquals(120, p.charOffset)
+        assertEquals("划线文本", p.quote)
+        assertEquals("我的批注", p.note)
+        assertEquals(999, p.createdAt)
+    }
+
+    @Test fun localToEntry_includesBookmarks() {
+        val bms = listOf(RemoteBookmark(chapterIndex = 1, charOffset = 5, quote = "q", note = "n"))
+        val entry = SyncEngine.localToEntry(lv("kx", "sx", 1), "books/kx.epub", bms)
+        assertEquals(1, entry.bookmarks.size)
+        assertEquals("q", entry.bookmarks[0].quote)
+    }
 }

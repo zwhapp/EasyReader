@@ -1,15 +1,18 @@
 package com.zeoffice.einkreader.webdav
 
 import android.content.Context
+import android.util.Log
 import com.zeoffice.einkreader.data.db.BookEntity
 import com.zeoffice.einkreader.data.db.SyncStateEntity
 import com.zeoffice.einkreader.data.db.SyncStateDao
 import com.zeoffice.einkreader.data.repository.BookRepository
+import com.zeoffice.einkreader.data.repository.BookmarkRepository
 import com.zeoffice.einkreader.domain.import.BookImporter
 import com.zeoffice.einkreader.domain.import.CoverFactory
 import com.zeoffice.einkreader.domain.model.BookFormat
 import com.zeoffice.einkreader.domain.model.CloudAccount
 import com.zeoffice.einkreader.domain.model.CloudFile
+import com.zeoffice.einkreader.domain.model.Bookmark
 import com.zeoffice.einkreader.domain.model.sync.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -30,6 +33,7 @@ import java.io.IOException
 class WebDavSyncManager(
     private val context: Context,
     private val bookRepo: BookRepository,
+    private val bookmarkRepo: BookmarkRepository,
     private val syncStateDao: SyncStateDao
 ) {
     /**
@@ -42,6 +46,7 @@ class WebDavSyncManager(
         direction: SyncDirection,
         policy: ConflictPolicy,
         syncFiles: Boolean,
+        syncBookmarks: Boolean = true,
         onProgress: suspend (msg: String, done: Int, total: Int) -> Unit
     ): SyncResult = withContext(Dispatchers.IO) {
         val client = WebDavClient(account.host, account.username, account.password)
@@ -103,7 +108,10 @@ class WebDavSyncManager(
                             }
                             if (!ok) throw IOException("上传文件失败")
                         }
-                        mergedEntries[item.key] = SyncEngine.localToEntry(lv, rel)
+                        // 书签: 开启则上传本地书签; 关闭则保留远端现有书签, 避免误清空
+                        val bms = if (syncBookmarks) loadLocalBookmarks(lv.id)
+                                  else (remote?.bookmarks ?: emptyList())
+                        mergedEntries[item.key] = SyncEngine.localToEntry(lv, rel, bms)
                         syncStateDao.upsert(
                             SyncStateEntity(item.key, lv.signature, lv.updatedAt, System.currentTimeMillis())
                         )
@@ -168,6 +176,8 @@ class WebDavSyncManager(
                                         System.currentTimeMillis()
                                     )
                                 )
+                                if (syncBookmarks) runCatching { mergeBookmarks(newId, rv.bookmarks) }
+                                    .onFailure { Log.w("EasyReader", "合并书签失败(新书): ${it.message}") }
                                 pulled++
                                 if (item.conflict) {
                                     conflicts++
@@ -209,6 +219,8 @@ class WebDavSyncManager(
                                     System.currentTimeMillis()
                                 )
                             )
+                            if (syncBookmarks) runCatching { mergeBookmarks(local.id, rv.bookmarks) }
+                                .onFailure { Log.w("EasyReader", "合并书签失败: ${it.message}") }
                             updated++
                             if (item.conflict) {
                                 conflicts++
@@ -297,4 +309,57 @@ class WebDavSyncManager(
         }
         throw last ?: IOException("同步失败")
     }
+
+    /** 本地书签 -> 远程书签 (剥离本地自增 id, 仅保留跨设备稳定字段) */
+    private suspend fun loadLocalBookmarks(bookId: Int): List<RemoteBookmark> =
+        bookmarkRepo.getByBook(bookId).map {
+            RemoteBookmark(
+                chapterIndex = it.chapterIndex,
+                charOffset = it.charOffset,
+                quote = it.quote,
+                note = it.note,
+                createdAt = it.createdAt
+            )
+        }
+
+    /**
+     * 把远端书签合并进本地 (追加合并语义):
+     *  - 按 (章节, 偏移, 引文) 去重, 本地缺失则新增;
+     *  - 已存在且远端笔记更新/非空则更新本地笔记;
+     *  - 不删除本地独有书签, 保留两端批注。
+     */
+    private suspend fun mergeBookmarks(bookId: Int, remote: List<RemoteBookmark>) {
+        if (remote.isEmpty()) return
+        val local = bookmarkRepo.getByBook(bookId)
+        for (rb in remote) {
+            val k = bkKey(rb.chapterIndex, rb.charOffset, rb.quote)
+            val existing = local.firstOrNull {
+                bkKey(it.chapterIndex, it.charOffset, it.quote) == k
+            }
+            if (existing == null) {
+                bookmarkRepo.add(
+                    Bookmark(
+                        bookId = bookId,
+                        chapterIndex = rb.chapterIndex,
+                        charOffset = rb.charOffset,
+                        quote = rb.quote,
+                        note = rb.note,
+                        createdAt = rb.createdAt
+                    )
+                )
+            } else if (rb.note.isNotBlank() &&
+                (existing.note.isBlank() || rb.createdAt >= existing.createdAt)
+            ) {
+                bookmarkRepo.add(
+                    existing.copy(
+                        note = rb.note,
+                        createdAt = if (rb.createdAt > existing.createdAt) rb.createdAt else existing.createdAt
+                    )
+                )
+            }
+        }
+    }
+
+    private fun bkKey(chapterIndex: Int, charOffset: Int, quote: String): String =
+        "$chapterIndex:$charOffset:$quote"
 }

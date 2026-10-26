@@ -542,14 +542,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         account: CloudAccount,
         direction: SyncDirection,
         policy: ConflictPolicy,
-        syncFiles: Boolean
+        syncFiles: Boolean,
+        syncBookmarks: Boolean = true
     ) {
         syncJob?.cancel()
         syncJob = vmScope.launch(Dispatchers.IO) {
             _syncStatus.value = SyncStatus.Syncing("正在连接服务器…", 0, 0)
             try {
-                val manager = WebDavSyncManager(app, bookRepo, db.syncStateDao())
-                val result = manager.sync(account, direction, policy, syncFiles) { msg, done, total ->
+                val manager = WebDavSyncManager(app, bookRepo, bookmarkRepo, db.syncStateDao())
+                val result = manager.sync(account, direction, policy, syncFiles, syncBookmarks) { msg, done, total ->
                     _syncStatus.value = SyncStatus.Syncing(msg, done, total)
                 }
                 loadBooks()

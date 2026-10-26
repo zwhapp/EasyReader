@@ -135,7 +135,11 @@ object SyncEngine {
     }
 
     /** 本地视图 -> 远程条目 (用于上传后写回索引) */
-    fun localToEntry(view: LocalSyncView, fileRelPath: String): RemoteBookEntry =
+    fun localToEntry(
+        view: LocalSyncView,
+        fileRelPath: String,
+        bookmarks: List<RemoteBookmark> = emptyList()
+    ): RemoteBookEntry =
         RemoteBookEntry(
             key = view.key,
             title = view.title,
@@ -144,7 +148,8 @@ object SyncEngine {
             file = fileRelPath,
             size = view.size,
             updatedAt = view.updatedAt,
-            progress = view.toRemoteProgress()
+            progress = view.toRemoteProgress(),
+            bookmarks = bookmarks
         )
 
     /** 生成书籍文件相对路径 (相对同步根目录) */
@@ -169,6 +174,23 @@ object SyncEngine {
                     if (!el.isJsonObject) continue
                     val o = el.asJsonObject
                     val p = o.getAsJsonObject("progress")
+                    val bmArr = o.getAsJsonArray("bookmarks")
+                    val bookmarks = ArrayList<RemoteBookmark>()
+                    if (bmArr != null) {
+                        for (bel in bmArr) {
+                            if (!bel.isJsonObject) continue
+                            val b = bel.asJsonObject
+                            bookmarks.add(
+                                RemoteBookmark(
+                                    chapterIndex = intOf(b, "chapterIndex"),
+                                    charOffset = intOf(b, "charOffset"),
+                                    quote = strOf(b, "quote"),
+                                    note = strOf(b, "note"),
+                                    createdAt = longOf(b, "createdAt")
+                                )
+                            )
+                        }
+                    }
                     books.add(
                         RemoteBookEntry(
                             key = strOf(o, "key"),
@@ -184,7 +206,8 @@ object SyncEngine {
                                 progressPercent = intOf(p, "progressPercent"),
                                 lastPage = intOf(p, "lastPage"),
                                 readingTimeSec = longOf(p, "readingTimeSec")
-                            )
+                            ),
+                            bookmarks = bookmarks
                         )
                     )
                 }
