@@ -25,6 +25,7 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
     val allAccounts by vm.accounts.collectAsState()
     val accounts = allAccounts.filter { it.provider == "webdav" }
     val syncStatus by vm.syncStatus.collectAsState()
+    val settings by vm.settings.collectAsState()
 
     var selectedId by remember { mutableStateOf<Int?>(accounts.firstOrNull()?.id) }
     val selectedAccount = accounts.firstOrNull { it.id == selectedId } ?: accounts.firstOrNull()
@@ -35,9 +36,13 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
     }
 
     var direction by remember { mutableStateOf(SyncDirection.TWO_WAY) }
-    var policy by remember { mutableStateOf(ConflictPolicy.NEWER_WINS) }
-    var syncFiles by remember { mutableStateOf(true) }
-    var syncBookmarks by remember { mutableStateOf(true) }
+    var policy by remember {
+        mutableStateOf(
+            runCatching { ConflictPolicy.valueOf(settings.syncPolicy) }.getOrDefault(ConflictPolicy.NEWER_WINS)
+        )
+    }
+    var syncFiles by remember { mutableStateOf(settings.syncFiles) }
+    var syncBookmarks by remember { mutableStateOf(settings.syncBookmarks) }
     var showPolicy by remember { mutableStateOf(false) }
 
     val isSyncing = syncStatus is SyncStatus.Syncing
@@ -183,6 +188,14 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
                     Button(
                         onClick = {
                             selectedAccount?.let { acc ->
+                                // 持久化本次选择的策略与范围, 供"自动同步"复用同一配置
+                                vm.saveSettings(
+                                    settings.copy(
+                                        syncPolicy = policy.name,
+                                        syncFiles = syncFiles,
+                                        syncBookmarks = syncBookmarks
+                                    )
+                                )
                                 vm.syncLibrary(acc, direction, policy, syncFiles, syncBookmarks)
                             }
                         },

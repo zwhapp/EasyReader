@@ -53,6 +53,14 @@ sealed class ImportStatus {
     data class Error(val msg: String) : ImportStatus()
 }
 
+/** 自动同步（启动拉取 / 退出推送）轻量提示 — 供书架页横幅与 Toast 使用 */
+sealed class AutoSyncNotice {
+    abstract val msg: String
+    data class Syncing(override val msg: String) : AutoSyncNotice()
+    data class Done(override val msg: String) : AutoSyncNotice()
+    data class Error(override val msg: String) : AutoSyncNotice()
+}
+
 /** 百度网盘扫码授权状态机 */
 sealed class BaiduLoginState {
     object Idle : BaiduLoginState()
@@ -137,6 +145,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
     private var syncJob: Job? = null
 
+    /** 自动同步（启动拉取 / 退出推送）的轻量提示, 供书架页横幅与 Toast 使用 */
+    private val _autoSyncNotice = MutableStateFlow<AutoSyncNotice?>(null)
+    val autoSyncNotice: StateFlow<AutoSyncNotice?> = _autoSyncNotice.asStateFlow()
+    fun clearAutoSyncNotice() { _autoSyncNotice.value = null }
+
+    /** 本次进程生命周期内是否已执行过"启动自动拉取" (保证仅拉取一次, 避免反复联网) */
+    private var autoPulledThisSession = false
+
     /**
      * 全局未捕获协程异常通道。
      * 此前本类大量 vmScope.launch 未加 try-catch, 任一未捕获异常都会直接杀掉进程
@@ -165,6 +181,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             _settings.value = s
             applyKeyConfig(s)
             if (entity == null) settingsRepo.saveSettings(s)
+            // 设置加载完成后, 若开启了"启动自动同步", 触发一次自动拉取 (仅当尚未触发, 由 flag 去重)
+            if (s.autoSyncOnStartup) tryAutoPull()
         }
         loadBooks()
         loadAccounts()
@@ -535,7 +553,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
     /**
-     * WebDAV 双向同步书库 — 书籍文件 + 阅读进度。
+     * 手动触发同步（WebDAV 同步页调用）— 书籍文件 + 阅读进度 + 书签笔记。
      * @param syncFiles true=同步书籍文件与进度; false=仅同步阅读进度
      */
     fun syncLibrary(
@@ -545,9 +563,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         syncFiles: Boolean,
         syncBookmarks: Boolean = true
     ) {
-        syncJob?.cancel()
+        runSync(account, direction, policy, syncFiles, syncBookmarks, isAuto = false)
+    }
+
+    /**
+     * 执行一次同步（手动与自动共用）。
+     * 自动同步采用双向合并（一次同步同时完成拉取与推送, 仅传变化, 冲突以修改时间为准）,
+     * 网络瞬时异常由 [WebDavSyncManager] 内部重试 3 次指数退避; 最终失败写入 [_autoSyncNotice] 供提示。
+     * @param isAuto true=自动同步（启动拉取/退出推送）: 进度与结果额外写入 [_autoSyncNotice], 供书架横幅/Toast 轻提示
+     */
+    private fun runSync(
+        account: CloudAccount,
+        direction: SyncDirection,
+        policy: ConflictPolicy,
+        syncFiles: Boolean,
+        syncBookmarks: Boolean,
+        isAuto: Boolean
+    ) {
+        if (syncJob?.isActive == true) return
         syncJob = vmScope.launch(Dispatchers.IO) {
             _syncStatus.value = SyncStatus.Syncing("正在连接服务器…", 0, 0)
+            if (isAuto) _autoSyncNotice.value = AutoSyncNotice.Syncing("WebDAV 自动同步中…")
             try {
                 val manager = WebDavSyncManager(app, bookRepo, bookmarkRepo, db.syncStateDao())
                 val result = manager.sync(account, direction, policy, syncFiles, syncBookmarks) { msg, done, total ->
@@ -555,13 +591,57 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 loadBooks()
                 _syncStatus.value = SyncStatus.Done(result)
+                if (isAuto) {
+                    _autoSyncNotice.value = if (result.success)
+                        AutoSyncNotice.Done("自动同步完成：${result.message}")
+                    else
+                        AutoSyncNotice.Error("自动同步完成（部分失败）：${result.message}")
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _syncStatus.value = SyncStatus.Idle
+                if (isAuto) _autoSyncNotice.value = null
                 throw e
             } catch (e: Throwable) {
                 Log.e("EasyReader", "同步失败", e)
-                _syncStatus.value = SyncStatus.Error(e.message ?: e.javaClass.simpleName)
+                val msg = e.message ?: e.javaClass.simpleName
+                _syncStatus.value = SyncStatus.Error(msg)
+                if (isAuto) _autoSyncNotice.value = AutoSyncNotice.Error("自动同步失败：$msg")
             }
+        }
+    }
+
+    /**
+     * 启动进入后自动拉取：采用双向合并（一次同步同时完成拉取与推送，仅传变化）。
+     * 仅当开启"启动自动同步"且本次进程尚未拉取过时执行；无 WebDAV 账户则静默跳过。
+     */
+    fun tryAutoPull() {
+        if (autoPulledThisSession) return
+        val s = _settings.value
+        if (!s.autoSyncOnStartup) return
+        autoPulledThisSession = true
+        launchAutoSync()
+    }
+
+    /**
+     * 退出程序前自动推送：在 ProcessLifecycle onStop 钩子中调用。
+     * 复用双向合并，仅推送本地变化；无 WebDAV 账户或开关关闭时静默跳过。
+     */
+    fun tryAutoPush() {
+        val s = _settings.value
+        if (!s.autoSyncOnExit) return
+        launchAutoSync()
+    }
+
+    /** 读取首个 WebDAV 账户，并以设置中配置的策略/范围发起一次自动双向同步 */
+    private fun launchAutoSync() {
+        if (syncJob?.isActive == true) return
+        vmScope.launch(Dispatchers.IO) {
+            val account = runCatching { cloudRepo.getAll() }.getOrNull()
+                ?.firstOrNull { it.provider == "webdav" } ?: return@launch
+            val s = _settings.value
+            val policy = runCatching { ConflictPolicy.valueOf(s.syncPolicy) }
+                .getOrDefault(ConflictPolicy.NEWER_WINS)
+            runSync(account, SyncDirection.TWO_WAY, policy, s.syncFiles, s.syncBookmarks, isAuto = true)
         }
     }
 

@@ -8,13 +8,15 @@ fun ReadingSettingsEntity.toDomain() = ReadingSettings(
     fontSizeSp, lineSpacing, paragraphSpacing, marginHorizontalDp, marginVerticalDp,
     theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn,
     einkMode, pageKeyAction, volumeKeyPageTurn, pageKeyPageTurn,
-    customPrevKeys, customNextKeys, keyDebug
+    customPrevKeys, customNextKeys, keyDebug,
+    autoSyncOnStartup, autoSyncOnExit, syncPolicy, syncFiles, syncBookmarks
 )
 fun ReadingSettings.toEntity() = ReadingSettingsEntity(
     id = 1, fontSizeSp, lineSpacing, paragraphSpacing, marginHorizontalDp, marginVerticalDp,
     theme, fontFamily, pageTurn, textAlign, brightness, keepScreenOn,
     einkMode, pageKeyAction, volumeKeyPageTurn, pageKeyPageTurn,
-    customPrevKeys, customNextKeys, keyDebug
+    customPrevKeys, customNextKeys, keyDebug,
+    autoSyncOnStartup, autoSyncOnExit, syncPolicy, syncFiles, syncBookmarks
 )
 
 // ---- Bookmark ----

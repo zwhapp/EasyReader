@@ -25,5 +25,11 @@ data class ReadingSettings(
     // 自定义兼容键值（逗号分隔整数）：适配厂商非常规按键。默认预置常见媒体/导航键（87/88/269/270）
     val customPrevKeys: String = "87,269",  // 上一页自定义键
     val customNextKeys: String = "88,270",  // 下一页自定义键
-    val keyDebug: Boolean = false           // 按键诊断：开启后实体键弹 Toast 显示 keyCode
+    val keyDebug: Boolean = false,          // 按键诊断：开启后实体键弹 Toast 显示 keyCode
+    // ===== WebDAV 自动同步 =====
+    val autoSyncOnStartup: Boolean = false, // 启动进入后自动从服务器拉取并合并远程书籍与进度
+    val autoSyncOnExit: Boolean = false,    // 退出程序前自动将本地书籍与进度推送至服务器
+    val syncPolicy: String = "NEWER_WINS",  // 冲突解决策略: NEWER_WINS(以修改时间较新者为准)/LOCAL_WINS/REMOTE_WINS
+    val syncFiles: Boolean = true,          // 自动同步是否包含书籍文件 (关闭则仅同步进度/书签)
+    val syncBookmarks: Boolean = true       // 自动同步是否包含书签与笔记
 )

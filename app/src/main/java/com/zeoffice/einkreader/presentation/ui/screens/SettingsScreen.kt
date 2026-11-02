@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.zeoffice.einkreader.domain.model.ReadingSettings
+import com.zeoffice.einkreader.domain.model.sync.ConflictPolicy
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import com.zeoffice.einkreader.utils.EinkDeviceDetector
@@ -327,8 +328,141 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            Divider()
+
+            // ===== WebDAV 自动同步 =====
+            Text("WebDAV 自动同步", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "开启后：进入程序自动从服务器拉取并合并书籍与进度；退出前自动将本地推送至服务器。可在书架页查看同步状态。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // 启动自动拉取
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("启动自动同步", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "进入程序时自动从 WebDAV 拉取远程书籍与进度并合并",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.autoSyncOnStartup,
+                    onCheckedChange = { vm.saveSettings(settings.copy(autoSyncOnStartup = it)) }
+                )
+            }
+
+            // 退出自动推送
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("退出自动同步", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "退出程序前自动将本地书籍与进度推送至 WebDAV 服务器",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.autoSyncOnExit,
+                    onCheckedChange = { vm.saveSettings(settings.copy(autoSyncOnExit = it)) }
+                )
+            }
+
+            // 冲突处理策略
+            Text("冲突处理（双向且两端均改动时）", style = MaterialTheme.typography.titleSmall)
+            var showAutoPolicy by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = showAutoPolicy,
+                onExpandedChange = { showAutoPolicy = it }
+            ) {
+                OutlinedTextField(
+                    value = autoPolicyLabel(settings.syncPolicy),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("冲突解决策略") },
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = showAutoPolicy,
+                    onDismissRequest = { showAutoPolicy = false }
+                ) {
+                    ConflictPolicy.values().forEach { p ->
+                        DropdownMenuItem(
+                            text = { Text(autoPolicyLabel(p.name)) },
+                            onClick = {
+                                vm.saveSettings(settings.copy(syncPolicy = p.name))
+                                showAutoPolicy = false
+                            }
+                        )
+                    }
+                }
+            }
+            Text(
+                "“以较新者为准”：本地与服务器修改时间较新的一方覆盖另一方，最贴合多设备续读场景。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // 自动同步书籍文件开关
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动同步书籍文件", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "关闭后仅同步阅读进度与书签（适合大文件 / 省流量）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.syncFiles,
+                    onCheckedChange = { vm.saveSettings(settings.copy(syncFiles = it)) }
+                )
+            }
+
+            // 自动同步书签与笔记开关
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动同步书签与笔记", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "关闭后仅同步书籍与进度，不同步划线 / 批注",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.syncBookmarks,
+                    onCheckedChange = { vm.saveSettings(settings.copy(syncBookmarks = it)) }
+                )
+            }
         }
     }
+}
+
+/** 自动同步冲突策略中文标签（settings.syncPolicy 存枚举名，渲染时转中文） */
+private fun autoPolicyLabel(policyName: String): String = when (policyName) {
+    ConflictPolicy.NEWER_WINS.name -> "以较新者为准"
+    ConflictPolicy.LOCAL_WINS.name -> "以本地为准"
+    ConflictPolicy.REMOTE_WINS.name -> "以服务器为准"
+    else -> "以较新者为准"
 }
 
 @Composable

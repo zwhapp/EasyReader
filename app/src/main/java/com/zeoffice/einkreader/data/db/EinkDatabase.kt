@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -101,13 +101,41 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 → v8: reading_settings 新增 WebDAV 自动同步配置字段。
+         *  - autoSyncOnStartup / autoSyncOnExit：启动自动拉取 / 退出自动推送 开关；
+         *  - syncPolicy：冲突解决策略（NEWER_WINS=以较新修改时间为准，默认）；
+         *  - syncFiles / syncBookmarks：自动同步范围（书籍文件 / 书签笔记）。
+         * 幂等 (列已存在则跳过 ALTER)；NOT NULL 列带 DEFAULT，SQLite 自动把默认值写入已有行，
+         * 老用户默认关闭自动同步（需手动开启），默认冲突策略为"以较新者为准"。
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if (!db.hasColumn("reading_settings", "autoSyncOnStartup")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN autoSyncOnStartup INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("reading_settings", "autoSyncOnExit")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN autoSyncOnExit INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("reading_settings", "syncPolicy")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN syncPolicy TEXT NOT NULL DEFAULT 'NEWER_WINS'")
+                }
+                if (!db.hasColumn("reading_settings", "syncFiles")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN syncFiles INTEGER NOT NULL DEFAULT 1")
+                }
+                if (!db.hasColumn("reading_settings", "syncBookmarks")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN syncBookmarks INTEGER NOT NULL DEFAULT 1")
+                }
+            }
+        }
+
         fun get(context: Context): EinkDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     EinkDatabase::class.java,
                     "eink_reader.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

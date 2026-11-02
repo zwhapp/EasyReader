@@ -18,9 +18,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -81,6 +85,42 @@ class MainActivity : ComponentActivity() {
                                     .makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_LONG)
                                     .show()
                                 vm.clearGlobalError()
+                            }
+                        }
+                    }
+                    // 全局未捕获错误提示（见 ViewModel.crashHandler）
+
+                    // WebDAV 自动同步 — 应用级前后台生命周期钩子:
+                    //  ON_START (进入前台/启动) -> 自动拉取并合并远程书籍与进度
+                    //  ON_STOP  (退到后台/退出) -> 自动将本地书籍与进度推送至服务器
+                    // 用 ProcessLifecycleOwner 而非组件 onDestroy, 可避开屏幕旋转等配置变更误触发。
+                    DisposableEffect(Unit) {
+                        val observer = object : DefaultLifecycleObserver {
+                            override fun onStart(owner: LifecycleOwner) {
+                                vm.tryAutoPull()
+                            }
+                            override fun onStop(owner: LifecycleOwner) {
+                                vm.tryAutoPush()
+                            }
+                        }
+                        val processLifecycle = ProcessLifecycleOwner.get()
+                        processLifecycle.lifecycle.addObserver(observer)
+                        onDispose { processLifecycle.lifecycle.removeObserver(observer) }
+                    }
+
+                    // 自动同步结果轻提示: 完成/失败弹 Toast（进行中不弹, 避免打扰）
+                    LaunchedEffect(Unit) {
+                        vm.autoSyncNotice.collect { notice ->
+                            when (notice) {
+                                is com.zeoffice.einkreader.presentation.viewmodel.AutoSyncNotice.Done ->
+                                    android.widget.Toast
+                                        .makeText(this@MainActivity, notice.msg, android.widget.Toast.LENGTH_SHORT)
+                                        .show()
+                                is com.zeoffice.einkreader.presentation.viewmodel.AutoSyncNotice.Error ->
+                                    android.widget.Toast
+                                        .makeText(this@MainActivity, notice.msg, android.widget.Toast.LENGTH_LONG)
+                                        .show()
+                                else -> { /* Syncing / null 不弹 Toast */ }
                             }
                         }
                     }

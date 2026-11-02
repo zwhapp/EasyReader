@@ -35,6 +35,7 @@ import androidx.navigation.NavHostController
 import com.zeoffice.einkreader.data.db.BookEntity
 import com.zeoffice.einkreader.domain.model.BookFormat
 import com.zeoffice.einkreader.presentation.ui.theme.LibraryAccent
+import com.zeoffice.einkreader.presentation.viewmodel.AutoSyncNotice
 import com.zeoffice.einkreader.presentation.viewmodel.ImportStatus
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +58,7 @@ private val IMPORT_MIME_TYPES = arrayOf(
 fun LibraryScreen(nav: NavHostController, vm: MainViewModel) {
     val books by vm.books.collectAsState()
     val importStatus by vm.importStatus.collectAsState()
+    val autoSyncNotice by vm.autoSyncNotice.collectAsState()
     val context = LocalContext.current
     var showImport by remember { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<BookEntity?>(null) }
@@ -153,6 +155,12 @@ fun LibraryScreen(nav: NavHostController, vm: MainViewModel) {
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                // 自动同步状态横幅：启动拉取 / 退出推送 的进度与结果轻提示（可手动关闭）
+                autoSyncNotice?.let { notice ->
+                    AutoSyncBanner(notice) { vm.clearAutoSyncNotice() }
+                }
+                Box(Modifier.fillMaxSize()) {
             when {
                 books.isEmpty() -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -181,6 +189,8 @@ fun LibraryScreen(nav: NavHostController, vm: MainViewModel) {
             }
             if (importStatus is ImportStatus.Importing) {
                 ImportProgressOverlay((importStatus as ImportStatus.Importing).msg)
+            }
+                }
             }
         }
     }
@@ -408,6 +418,55 @@ private fun sourceLabel(s: String): String = when (s) {
     "baidu" -> "百度网盘"
     "ali" -> "阿里云盘"
     else -> s
+}
+
+/** 自动同步状态横幅 — 顶部展示进行中/完成/失败，并允许手动关闭 */
+@Composable
+private fun AutoSyncBanner(notice: AutoSyncNotice, onDismiss: () -> Unit) {
+    val isError = notice is AutoSyncNotice.Error
+    val isSyncing = notice is AutoSyncNotice.Syncing
+    Card(
+        Modifier.fillMaxWidth().padding(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isSyncing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    when (notice) {
+                        is AutoSyncNotice.Syncing -> "WebDAV 自动同步中"
+                        is AutoSyncNotice.Done -> "WebDAV 自动同步"
+                        is AutoSyncNotice.Error -> "WebDAV 自动同步失败"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    notice.msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isError) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, "关闭", tint = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+        }
+    }
 }
 
 /** 查询 SAF 文档的真实显示名; 失败返回 null */

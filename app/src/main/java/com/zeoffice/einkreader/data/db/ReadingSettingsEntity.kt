@@ -26,5 +26,11 @@ data class ReadingSettingsEntity(
     val pageKeyPageTurn: Boolean,  // 翻页键翻页: PAGE_UP/DPAD_UP/DPAD_LEFT=上一页; PAGE_DOWN/DPAD_DOWN/DPAD_RIGHT=下一页（默认开）
     val customPrevKeys: String,    // 上一页自定义兼容键值（逗号分隔，默认 87,269）
     val customNextKeys: String,    // 下一页自定义兼容键值（逗号分隔，默认 88,270）
-    val keyDebug: Boolean          // 按键诊断开关
+    val keyDebug: Boolean,         // 按键诊断开关
+    // ===== WebDAV 自动同步 =====
+    val autoSyncOnStartup: Boolean, // 启动进入后自动从服务器拉取并合并
+    val autoSyncOnExit: Boolean,    // 退出程序前自动将本地推送至服务器
+    val syncPolicy: String,         // 冲突解决策略 (NEWER_WINS/LOCAL_WINS/REMOTE_WINS)
+    val syncFiles: Boolean,         // 自动同步是否包含书籍文件
+    val syncBookmarks: Boolean      // 自动同步是否包含书签与笔记
 )
