@@ -51,6 +51,9 @@ class ReaderView @JvmOverloads constructor(
         this.settings = settings
         this.bgColor = bg
         this.textColor = text
+        // 排版设置里的「左对齐 / 两端对齐」此前从未作用于文本 Canvas，恒为两端对齐。
+        // 两端对齐会改变每个字符的绘制 x，必须在分页前确定并交给 Paginator 统一布局。
+        justify = settings.textAlign != "left"
         textPaint.color = text
         textPaint.textSize = settings.fontSizeSp * scaledDensity
         // 墨水屏灰度有限：关闭抗锯齿与抖动，避免灰边残影，提升文字清晰度与对比度
@@ -75,7 +78,7 @@ class ReaderView @JvmOverloads constructor(
         val contentH = (height - 2 * marginTopPx).coerceAtLeast(10)
         val lineH = settings.fontSizeSp * settings.lineSpacing * scaledDensity
         val paraS = settings.paragraphSpacing * density
-        paginator = Paginator(textPaint, contentW, contentH, lineH, paraS)
+        paginator = Paginator(textPaint, contentW, contentH, lineH, paraS, justify)
         pages = paginator!!.paginate(chapterIndex, chapterText)
         if (pageIndex >= pages.size) pageIndex = (pages.size - 1).coerceAtLeast(0)
         invalidate()
@@ -110,37 +113,18 @@ class ReaderView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(bgColor)
         val page = pages.getOrNull(pageIndex) ?: return
+        val yOffset = marginTopPx.toFloat()
+        val xOffset = marginPx.toFloat()
         for (line in page.lines) {
-            if (justify && line.text.isNotBlank()) {
-                drawJustified(canvas, line)
-            } else {
-                canvas.drawText(
-                    line.text,
-                    marginPx.toFloat(),
-                    line.baseline + marginTopPx,
-                    textPaint
-                )
+            val text = line.text
+            if (text.isEmpty()) continue
+            // 逐字符按 Paginator 预算好的 charXs 绘制。两端对齐的额外字距已经算在
+            // 里面，命中检测读的是同一份坐标，因此"点到的字"必然就是"看到的字"。
+            val y = line.baseline + yOffset
+            val xs = line.charXs
+            for (i in text.indices) {
+                canvas.drawText(text[i].toString(), xOffset + xs[i], y, textPaint)
             }
-        }
-    }
-
-    private fun drawJustified(canvas: Canvas, line: LaidLine) {
-        val text = line.text
-        val natural = textPaint.measureText(text)
-        val contentW = (width - 2 * marginPx).coerceAtLeast(1)
-        val slack = contentW - natural
-        // 仅对"自然换行"的整行两端对齐; 段落末行/短行 (空白明显) 保持左对齐
-        val charW = textPaint.measureText("国").coerceAtLeast(1f)
-        if (slack > charW || text.length <= 1) {
-            canvas.drawText(text, marginPx.toFloat(), line.baseline + marginTopPx, textPaint)
-            return
-        }
-        val gaps = text.length - 1
-        val per = slack / gaps
-        var x = marginPx.toFloat()
-        for (ch in text) {
-            canvas.drawText(ch.toString(), x, line.baseline + marginTopPx, textPaint)
-            x += textPaint.measureText(ch.toString()) + per
         }
     }
 

@@ -29,6 +29,7 @@ import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import com.zeoffice.einkreader.reader.PdfReaderView
 import com.zeoffice.einkreader.reader.ReaderView
+import com.zeoffice.einkreader.reader.TextHit
 import com.zeoffice.einkreader.utils.ReaderKeyDispatcher
 import java.io.File
 
@@ -52,7 +53,8 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
     val readerViewRef = remember { mutableStateOf<ReaderView?>(null) }
     val pdfViewRef = remember { mutableStateOf<PdfReaderView?>(null) }
     val sheet = remember { mutableStateOf<String?>(null) }      // settings / toc / bookmarks
-    val dict = remember { mutableStateOf<Pair<String, String>?>(null) }
+    // Triple(命中的词, 释义, 点选字) —— 保留点选字用于弹窗核对，避免"查的不知道是哪个字"
+    val dict = remember { mutableStateOf<Triple<String, String, Char>?>(null) }
     var showExit by remember { mutableStateOf(false) }
 
     // 进入阅读：打开书籍 + 载入书签 (离开时清掉错误状态)
@@ -239,21 +241,17 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                             it.onPageTurn = { turnPage(it) }
                             it.onCenterTap = { menuOpen.value = !menuOpen.value }
                             it.onWordTap = { word, clickIdx ->
-                                // 长按取词: word 是连续字词片段, 依次尝试所有包含
-                                // 点击字符的子串 (长->短), 命中即弹词典
-                                var hit: Pair<String, String>? = null
-                                outer@ for (len in word.length downTo 1) {
-                                    var start = minOf(clickIdx, word.length - len)
-                                    while (start >= 0) {
-                                        val entry = vm.dictRepo.lookupEntry(word.substring(start, start + len))
-                                        if (entry != null) {
-                                            hit = entry
-                                            break@outer
-                                        }
-                                        start--
-                                    }
-                                }
-                                if (hit != null) dict.value = hit
+                                // 长按取词: 以点选字为锚枚举候选词，且必须用精确查询。
+                                // 旧实现把整段送进 lookupEntry（内部带中文最长前缀匹配），
+                                // 结果总是命中片段开头的词，与手指点中的字无关。
+                                val picked = word[clickIdx.coerceIn(0, word.lastIndex)]
+                                dict.value = TextHit.resolveWord(
+                                    word, clickIdx, lookup = { q -> vm.dictRepo.lookupExact(q) }
+                                ) ?: Triple(
+                                    picked.toString(),
+                                    "内置词典暂未收录该字，可在 assets/dict.txt 扩充词库后重新构建。",
+                                    picked
+                                )
                             }
                             readerViewRef.value = it
                         }
@@ -347,11 +345,21 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
     }
 
     // 词典弹窗
-    dict.value?.let { (w, d) ->
+    dict.value?.let { (w, d, picked) ->
         AlertDialog(
             onDismissRequest = { dict.value = null },
             title = { Text(w) },
-            text = { Text(d) },
+            text = {
+                Column {
+                    Text(
+                        "点选字：$picked",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(d)
+                }
+            },
             confirmButton = { TextButton(onClick = { dict.value = null }) { Text("关闭") } }
         )
     }

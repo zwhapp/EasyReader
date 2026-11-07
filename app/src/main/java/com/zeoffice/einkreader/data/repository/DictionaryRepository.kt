@@ -32,6 +32,21 @@ class DictionaryRepository(context: Context) {
     /** 取词查询; 返回释义或 null */
     fun lookup(raw: String): String? = lookupEntry(raw)?.second
 
+    /**
+     * 精确查询（不做中文最长前缀截断），供「长按取词」的候选词枚举使用。
+     *
+     * lookupEntry 会把任意输入截成「开头的词」再查，用它去枚举候选子串时，
+     * 无论点哪个字都会先命中整段开头的词，与点击位置无关。候选枚举必须精确匹配。
+     */
+    fun lookupExact(raw: String): Pair<String, String>? {
+        if (raw.isEmpty()) return null
+        val word = raw.trim()
+        if (word.isEmpty()) return null
+        map[word]?.let { return word to it }
+        map[word.lowercase()]?.let { return word to it }
+        return null
+    }
+
     /** 取词查询; 返回 (命中的规范词, 释义) 或 null */
     fun lookupEntry(raw: String): Pair<String, String>? {
         if (raw.isBlank()) return null
