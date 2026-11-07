@@ -18,8 +18,10 @@ data class LaidLine(
     val baseline: Float,
     /** 该行首字符在章节全文中的偏移 */
     val charStart: Int,
-    /** 每个字符的绘制起点 x; size = text.length + 1, 末位为行尾 x */
-    val charXs: List<Float>
+    /** 每个字符的绘制起点 x（相对文字起点，不含缩进）; size = text.length + 1 */
+    val charXs: List<Float>,
+    /** 段落首行缩进；绘制与命中检测都要减去它，保证坐标同源 */
+    val indent: Float = 0f
 )
 
 data class ReadPage(
@@ -43,7 +45,9 @@ class Paginator(
     private val contentHeight: Int,
     private val lineHeightPx: Float,
     private val paragraphSpacingPx: Float,
-    private val justify: Boolean = true
+    private val justify: Boolean = true,
+    /** 段落首行缩进（px），0 = 不缩进 */
+    private val firstLineIndentPx: Float = 0f
 ) {
     /**
      * 将单章文本分页
@@ -58,8 +62,10 @@ class Paginator(
         var y = 0f
         var offset = 0
 
-        fun addLine(t: String, consumed: Int) {
-            currentLines.add(LaidLine(t, y, y + baselineOffset, offset, layoutLine(t)))
+        fun addLine(t: String, consumed: Int, indent: Float = 0f) {
+            currentLines.add(
+                LaidLine(t, y, y + baselineOffset, offset, layoutLine(t, (contentWidth - indent).coerceAtLeast(1f)), indent)
+            )
             // consumed 是这行在章节原文里实际吃掉的字符数: 被 trimEnd 丢掉的尾空格、
             // 换行时被跳过的行首空格都要算进去, 否则后续 charStart 会持续偏小。
             offset += consumed
@@ -90,10 +96,10 @@ class Paginator(
                 addLine("", 1) // 空行对应原文的一个 '\n'
                 continue
             }
-            val wrapped = wrapParagraph(para)
-            for (wl in wrapped) {
+            val wrapped = wrapParagraph(para, firstLineIndentPx)
+            wrapped.forEachIndexed { lineNo, wl ->
                 if (y + lineHeightPx > contentHeight && currentLines.isNotEmpty()) flushPage()
-                addLine(wl.text, wl.consumed)
+                addLine(wl.text, wl.consumed, if (lineNo == 0) firstLineIndentPx else 0f)
             }
             y += paragraphSpacingPx
             offset += 1 // 段落分隔的 '\n'
@@ -104,16 +110,31 @@ class Paginator(
 
     private data class WrappedLine(val text: String, val consumed: Int)
 
-    private fun wrapParagraph(para: String): List<WrappedLine> {
+    private fun wrapParagraph(para: String, firstIndent: Float): List<WrappedLine> {
         val lines = mutableListOf<WrappedLine>()
         val line = StringBuilder()
         var lineWidth = 0f
+        // 段落首行要减去缩进宽度，否则首行会比后续行更早超出行宽
+        var limit = (contentWidth - firstIndent).coerceAtLeast(1f)
         var i = 0
         while (i < para.length) {
             val ch = para[i]
             val w = paint.measureText(ch.toString())
-            if (lineWidth + w > contentWidth && line.isNotEmpty()) {
+            if (lineWidth + w > limit && line.isNotEmpty()) {
                 val raw = line.toString()
+                // 中文排版禁则（避头点）：句号、逗号、右引号等不能落在行首。
+                // 把上一行最后一个字连同该标点一起挪到下一行，避免标点孤悬行首。
+                if (isForbiddenLineStart(ch) && raw.length >= 2) {
+                    val emit = raw.dropLast(1)
+                    val last = raw.last()
+                    lines.add(WrappedLine(emit.trimEnd(), emit.length))
+                    limit = contentWidth.toFloat()
+                    line.setLength(0)
+                    line.append(last).append(ch)
+                    lineWidth = paint.measureText(last.toString()) + w
+                    i++
+                    continue
+                }
                 var consumed = raw.length
                 line.setLength(0)
                 lineWidth = 0f
@@ -124,6 +145,7 @@ class Paginator(
                     consumed++
                 }
                 lines.add(WrappedLine(raw.trimEnd(), consumed))
+                limit = contentWidth.toFloat() // 只有段落首行受缩进影响
                 if (skipSpace) continue
             }
             line.append(ch)
@@ -141,14 +163,14 @@ class Paginator(
      * 计算一行每个字符的绘制起点。两端对齐的额外字距在此一次性定下来,
      * 绘制与命中检测都只读这份结果, 不再各自用 measureText 累加。
      */
-    private fun layoutLine(text: String): List<Float> {
+    private fun layoutLine(text: String, availableWidth: Float = contentWidth.toFloat()): List<Float> {
         if (text.isEmpty()) return listOf(0f)
         val widths = FloatArray(text.length) { paint.measureText(text[it].toString()) }
         var natural = 0f
         for (w in widths) natural += w
         val charW = paint.measureText("国").coerceAtLeast(1f)
         val gaps = text.length - 1
-        val slack = contentWidth - natural
+        val slack = availableWidth - natural
         // 与原两端对齐规则一致: 仅"自然换行"的整行拉伸, 段落末行/短行保持左对齐。
         // slack 为负时不再挤压 (旧实现会产生负字距, 让字符叠在一起)。
         val per = if (justify && gaps > 0 && slack >= 0f && slack <= charW) slack / gaps else 0f
@@ -168,7 +190,8 @@ class Paginator(
             ?: return null
         val text = line.text
         if (text.isEmpty()) return null
-        val idx = TextHit.indexOfX(line.charXs, x)
+        // 缩进是绘制时叠加的偏移，命中检测必须先扣掉，才能与 charXs 对齐
+        val idx = TextHit.indexOfX(line.charXs, x - line.indent)
         val token = extractToken(text, idx)
         if (token.text.isEmpty()) return null
         return WordHit(token.text, line.charStart + token.start, idx - token.start)
@@ -196,6 +219,14 @@ class Paginator(
         } else {
             Token("", idx) // 标点 / 空白不取词
         }
+    }
+
+    /** 不允许出现在行首的标点（中文排版禁则） */
+    private fun isForbiddenLineStart(c: Char): Boolean = when (c) {
+        '。', '，', '、', '；', '：', '？', '！', '…', '～', '·',
+        '）', '》', '」', '』', '】', '〉', '”', '’',
+        '.', ',', ';', ':', '?', '!', ')', ']', '}' -> true
+        else -> false
     }
 
     private fun isWordChar(c: Char): Boolean =

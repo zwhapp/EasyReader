@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
@@ -46,16 +47,33 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
     val isPdf = book?.format == BookFormat.PDF.name
     val theme = READER_THEMES[settings.theme] ?: READER_THEMES["day"]!!
 
-    // 状态持有者 (供稳定触摸回调读取最新值)
-    val chapterIdx = remember { mutableIntStateOf(book?.chapterIndex ?: 0) }
-    val pageIdx = remember { mutableIntStateOf(0) }
-    val menuOpen = remember { mutableStateOf(false) }
+    // 阅读现场用 rememberSaveable：旋转 / 分屏 / 系统字号变化后不丢章节与页码
+    val chapterIdx = rememberSaveable { mutableStateOf(book?.chapterIndex ?: 0) }
+    val pageIdx = rememberSaveable { mutableStateOf(0) }
+    /** 当前页首字符偏移：比页码更可靠，重排（屏幕/字号变化）后用它精确还原位置 */
+    val anchorOffset = rememberSaveable { mutableStateOf(-1) }
+    var restored by rememberSaveable { mutableStateOf(false) }
+    var lastChapterIdx by rememberSaveable { mutableStateOf(chapterIdx.value) }
+    val menuOpen = rememberSaveable { mutableStateOf(false) }
     val readerViewRef = remember { mutableStateOf<ReaderView?>(null) }
     val pdfViewRef = remember { mutableStateOf<PdfReaderView?>(null) }
-    val sheet = remember { mutableStateOf<String?>(null) }      // settings / toc / bookmarks
-    // Triple(命中的词, 释义, 点选字) —— 保留点选字用于弹窗核对，避免"查的不知道是哪个字"
+    val sheet = rememberSaveable { mutableStateOf<String?>(null) } // settings / toc / bookmarks
+    // Triple(命中的词, 释义, 点选字)
     val dict = remember { mutableStateOf<Triple<String, String, Char>?>(null) }
-    var showExit by remember { mutableStateOf(false) }
+    var showExit by rememberSaveable { mutableStateOf(false) }
+    var pdfError by rememberSaveable { mutableStateOf<String?>(null) }
+    // 显式跳转（翻页/目录/书签）已自行 applyReader，跳过随后由 chapterIdx 触发的重复分页
+    var suppressNextApply by remember { mutableStateOf(false) }
+    // 亮度拖动时的即时预览（不写 DB、不触发重排），松手后才持久化
+    var brightnessPreview by rememberSaveable { mutableStateOf(settings.brightness) }
+    LaunchedEffect(settings.brightness) { brightnessPreview = settings.brightness }
+
+    // 只在这些字段变化时才重新分页；亮度/常亮/按键/同步等无关设置不再触发全章重排
+    val layoutKey = listOf(
+        settings.fontSizeSp, settings.lineSpacing, settings.marginHorizontalDp,
+        settings.marginVerticalDp, settings.fontFamily, settings.textAlign,
+        settings.theme, settings.einkMode, settings.firstLineIndent, settings.cleanText
+    )
 
     // 进入阅读：打开书籍 + 载入书签 (离开时清掉错误状态)
     LaunchedEffect(bookId) {
@@ -67,16 +85,28 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         onDispose { vm.clearOpenError() }
     }
 
-    // 应用阅读器排版（随章节 / 设置变化重排）
-    fun applyReader(gotoLast: Boolean = false) {
+    // 应用阅读器排版：单一入口，一次分页 + 按字符偏移定位（章节/设置/屏幕变化共用）
+    fun applyReader(gotoLast: Boolean = false, targetOffset: Int? = null) {
         val rv = readerViewRef.value ?: return
         val p = vm.parsedBook.value ?: return
         if (p.chapters.isEmpty()) return
+        lastChapterIdx = chapterIdx.value
         val ch = p.chapters.getOrElse(chapterIdx.value) { p.chapters.first() }
-        rv.configure(vm.settings.value, theme.background.toArgb(), theme.onBackground.toArgb(), settings.einkMode)
-        rv.setChapter(chapterIdx.value, ch.text)
-        if (gotoLast) rv.setPage(rv.totalPages - 1)
-        else rv.setPage(pageIdx.value.coerceIn(0, (rv.totalPages - 1).coerceAtLeast(0)))
+        val sameChapter = rv.currentChapterIndex == chapterIdx.value
+        // 同章且未指定目标（如仅改字号）：沿用当前页锚点，避免跳回页首
+        val anchor = if (targetOffset == null && !gotoLast && sameChapter) rv.currentCharOffset() else null
+        rv.show(
+            index = chapterIdx.value,
+            text = ch.text,
+            s = vm.settings.value,
+            bg = theme.background.toArgb(),
+            fg = theme.onBackground.toArgb(),
+            eink = settings.einkMode,
+            targetOffset = targetOffset ?: anchor,
+            gotoLast = gotoLast
+        )
+        pageIdx.value = rv.currentPageIndex
+        anchorOffset.value = rv.currentCharOffset()
     }
 
     fun saveProgress() {
@@ -92,6 +122,7 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
             val before = p.chapters.take(chapterIdx.value).sumOf { it.text.length }
             val offset = readerViewRef.value?.currentCharOffset() ?: 0
             val percent = ((before + offset) * 100 / total).coerceIn(0, 100)
+            anchorOffset.value = offset
             vm.savePosition(b.id, chapterIdx.value, offset, percent)
         }
     }
@@ -105,6 +136,7 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                 pageIdx.value += 1
                 rv.setPage(pageIdx.value)
             } else if (chapterIdx.value < p.chapters.lastIndex) {
+                suppressNextApply = true
                 chapterIdx.value += 1
                 pageIdx.value = 0
                 applyReader()
@@ -114,6 +146,7 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                 pageIdx.value -= 1
                 rv.setPage(pageIdx.value)
             } else if (chapterIdx.value > 0) {
+                suppressNextApply = true
                 chapterIdx.value -= 1
                 pageIdx.value = 0
                 applyReader(gotoLast = true)
@@ -134,6 +167,7 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         val p = vm.parsedBook.value ?: return
         val target = (chapterIdx.value + delta).coerceIn(0, p.chapters.lastIndex)
         if (target != chapterIdx.value) {
+            suppressNextApply = true
             chapterIdx.value = target
             pageIdx.value = 0
             applyReader()
@@ -167,21 +201,33 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
         onDispose { ReaderKeyDispatcher.handler = null }
     }
 
-    // 文本阅读器：随 parsed / settings / 章节 重排（页内翻页不触发整章重排）
-    LaunchedEffect(parsed, settings, chapterIdx.value) {
-        if (!isPdf) applyReader()
-    }
-    // 首次定位到上次阅读位置
-    var restored by remember { mutableStateOf(false) }
-    LaunchedEffect(parsed) {
-        if (!isPdf && parsed != null && !restored && book != null) {
-            readerViewRef.value?.gotoOffset(book.charOffset)
-            pageIdx.value = readerViewRef.value?.currentPageIndex ?: 0
-            restored = true
+    // 只依赖影响排版的字段；亮度/常亮/按键/同步开关不再触发全章重排
+    LaunchedEffect(parsed, chapterIdx.value, layoutKey) {
+        if (isPdf || parsed == null) return@LaunchedEffect
+        if (suppressNextApply) {
+            suppressNextApply = false
+            return@LaunchedEffect
         }
+        val chapterChanged = chapterIdx.value != lastChapterIdx
+        val target = when {
+            !restored -> book?.charOffset ?: 0           // 首次进入：数据库里的上次阅读位置
+            chapterChanged -> 0                          // 换章：从章首开始
+            anchorOffset.value >= 0 -> anchorOffset.value // 设置/配置变化：按偏移精确还原
+            else -> 0
+        }
+        applyReader(targetOffset = target)
+        restored = true
     }
 
     BackHandler(enabled = true) { showExit = true }
+
+    // 离开 PDF 阅读页时释放 PdfRenderer / ParcelFileDescriptor / 位图，避免 fd 与 native 内存泄漏
+    DisposableEffect(Unit) {
+        onDispose {
+            pdfViewRef.value?.release()
+            pdfViewRef.value = null
+        }
+    }
 
     // 保持屏幕常亮
     val view = LocalView.current
@@ -203,17 +249,34 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                 }
             }
             isPdf -> {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        PdfReaderView(ctx).also {
-                            it.onPageTurn = { turnPdf(it) }
-                            it.onCenterTap = { menuOpen.value = !menuOpen.value }
-                            book?.let { b -> it.open(File(b.filePath)) }
-                            pdfViewRef.value = it
+                if (pdfError != null) {
+                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                pdfError ?: "无法打开 PDF",
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = { nav.popBackStack() }) { Text("返回书库") }
                         }
                     }
-                )
+                } else {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            PdfReaderView(ctx).also { view ->
+                                view.onPageTurn = { turnPdf(it) }
+                                view.onCenterTap = { menuOpen.value = !menuOpen.value }
+                                val b = book
+                                // open() 内部捕获异常并返回错误信息，不再让损坏/加密 PDF 冲出 Composition 崩溃
+                                pdfError = if (b == null) "书籍不存在"
+                                else view.open(File(b.filePath), b.charOffset.coerceAtLeast(0))
+                                pdfViewRef.value = view
+                            }
+                        }
+                    )
+                }
             }
             parsed == null && openError == null -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -240,6 +303,11 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                         ReaderView(ctx).also {
                             it.onPageTurn = { turnPage(it) }
                             it.onCenterTap = { menuOpen.value = !menuOpen.value }
+                            // 重排后把真实页码/偏移同步回 Compose，避免屏幕旋转后页码脱节
+                            it.onLayoutChanged = { pi, _, off ->
+                                pageIdx.value = pi
+                                anchorOffset.value = off
+                            }
                             it.onWordTap = { word, clickIdx ->
                                 // 长按取词: 以点选字为锚枚举候选词，且必须用精确查询。
                                 // 旧实现把整段送进 lookupEntry（内部带中文最长前缀匹配），
@@ -262,10 +330,10 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
 
         // 应用内亮度调暗（覆盖在阅读区之上）
         // 电纸书模式下禁用：半透明黑层会在墨水屏上留下明显灰影，且调暗意义不大（交予系统亮度）
-        if (settings.brightness < 1f && !settings.einkMode) {
+        if (brightnessPreview < 1f && !settings.einkMode) {
             Box(
                 Modifier.fillMaxSize()
-                    .background(Color.Black.copy(alpha = (1f - settings.brightness).coerceIn(0f, 0.9f)))
+                    .background(Color.Black.copy(alpha = (1f - brightnessPreview).coerceIn(0f, 0.9f)))
             )
         }
 
@@ -372,11 +440,15 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
             containerColor = MaterialTheme.colorScheme.surface
         ) {
             when (sheetType) {
-                "settings" -> ReaderSettingsSheet(vm, settings) { sheet.value = null }
+                "settings" -> ReaderSettingsSheet(
+                    vm, settings,
+                    onBrightnessPreview = { brightnessPreview = it }
+                ) { sheet.value = null }
                 "toc" -> TocSheet(parsed, chapterIdx.value) { i ->
+                    suppressNextApply = true
                     chapterIdx.value = i
                     pageIdx.value = 0
-                    applyReader()
+                    applyReader(targetOffset = 0)
                     saveProgress()
                     sheet.value = null
                 }
@@ -386,11 +458,10 @@ fun ReaderScreen(nav: NavHostController, vm: MainViewModel, bookId: Int) {
                     vm = vm,
                     onJump = { bm ->
                         if (!isPdf) {
+                            suppressNextApply = true
                             chapterIdx.value = bm.chapterIndex
                             pageIdx.value = 0
-                            applyReader()
-                            readerViewRef.value?.gotoOffset(bm.charOffset)
-                            pageIdx.value = readerViewRef.value?.currentPageIndex ?: 0
+                            applyReader(targetOffset = bm.charOffset)
                             saveProgress()
                         }
                         sheet.value = null
@@ -436,6 +507,7 @@ private fun progressText(
 private fun ReaderSettingsSheet(
     vm: MainViewModel,
     settings: com.zeoffice.einkreader.domain.model.ReadingSettings,
+    onBrightnessPreview: (Float) -> Unit,
     onClose: () -> Unit
 ) {
     Column(
@@ -483,9 +555,46 @@ private fun ReaderSettingsSheet(
             }
         }
 
-        // 亮度
+        // 正文智能整理（v0.4.8）
+        Text("正文整理与排版", style = MaterialTheme.typography.titleSmall)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("智能整理正文", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "自动删除多余空行/空格，合并 TXT 硬换行为自然段；诗歌、代码类书籍可关闭",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = settings.cleanText,
+                onCheckedChange = { vm.saveSettings(settings.copy(cleanText = it)) }
+            )
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("段落首行缩进", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "每段首行缩进两个汉字宽，宽屏自动限制行宽并居中",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = settings.firstLineIndent,
+                onCheckedChange = { vm.saveSettings(settings.copy(firstLineIndent = it)) }
+            )
+        }
+
+        // 亮度：拖动只改本地预览（不写 DB、不触发全章重排），松手才持久化
+        var brightnessValue by remember(settings.brightness) { mutableStateOf(settings.brightness) }
         Text("亮度", style = MaterialTheme.typography.bodyMedium)
-        Slider(value = settings.brightness, onValueChange = { vm.saveSettings(settings.copy(brightness = it)) }, valueRange = 0.3f..1f)
+        Slider(
+            value = brightnessValue,
+            onValueChange = { brightnessValue = it; onBrightnessPreview(it) },
+            onValueChangeFinished = { vm.saveSettings(settings.copy(brightness = brightnessValue)) },
+            valueRange = 0.3f..1f
+        )
 
         // 保持常亮
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

@@ -19,8 +19,14 @@ import kotlin.math.min
  *
  * 手势:
  *  - 单指点击: 左 1/3 上一页, 右 1/3 下一页, 中间呼出菜单 (仅未缩放时)
- *  - 双指捏合: 0.5x ~ 4x 缩放, 缩放超过 1.4x 后按新分辨率重渲染页面 (更清晰)
- *  - 缩放后单指拖动: 平移查看局部; 翻页自动复位到 1x 并保持页码
+ *  - 双指捏合: 0.5x ~ 4x 缩放, 缩放超过阈值后按新分辨率重渲染页面 (更清晰)
+ *  - 缩放后单指拖动: 平移查看局部
+ *
+ * v0.4.8 修复:
+ *  - open() 捕获损坏/加密/被删 PDF 的异常并返回错误信息，不再让异常冲出 Composition
+ *  - 保存并释放 ParcelFileDescriptor（PdfRenderer 不负责关闭调用方传入的 fd）
+ *  - 支持从上次阅读页码恢复
+ *  - 位图按 renderZoom 渲染后，绘制倍率改为 zoom/renderZoom，消除「双重放大」
  */
 class PdfReaderView @JvmOverloads constructor(
     context: Context,
@@ -28,6 +34,7 @@ class PdfReaderView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private var renderer: PdfRenderer? = null
+    private var fileDescriptor: ParcelFileDescriptor? = null
     private var currentPage: PdfRenderer.Page? = null
     private var bitmap: Bitmap? = null
     private var pageIndex = 0
@@ -37,10 +44,12 @@ class PdfReaderView @JvmOverloads constructor(
     var onCenterTap: (() -> Unit)? = null
 
     // ---- 缩放/平移状态 ----
-    private var zoom = 1f                 // 当前显示缩放
-    private var panX = 0f                 // 缩放后位图左上角在视图中的位置
+    private var zoom = 1f                 // 目标显示缩放（相对 1x 页面）
+    private var panX = 0f
     private var panY = 0f
-    private var renderZoom = 1f           // 位图实际渲染分辨率倍率 (>= zoom 时足够清晰)
+    private var renderZoom = 1f           // 位图渲染分辨率倍率
+    /** 位图已按 renderZoom 放大，绘制时只能再放大 zoom/renderZoom，否则会双重放大 */
+    private val displayScale: Float get() = zoom / renderZoom.coerceAtLeast(0.01f)
 
     private var downX = 0f
     private var downY = 0f
@@ -61,7 +70,6 @@ class PdfReaderView @JvmOverloads constructor(
                 if (new != old) {
                     val fx = detector.focusX
                     val fy = detector.focusY
-                    // 以焦点为锚缩放: 焦点下的内容点保持不动
                     panX = fx - (fx - panX) * (new / old)
                     panY = fy - (fy - panY) * (new / old)
                     zoom = new
@@ -77,29 +85,67 @@ class PdfReaderView @JvmOverloads constructor(
         }
     )
 
-    fun open(file: File) {
+    /**
+     * 打开 PDF。
+     * @return null = 成功；非 null = 可展示给用户的错误原因（绝不抛异常到 Compose）
+     */
+    fun open(file: File, startPage: Int = 0): String? {
+        release()
+        return try {
+            if (!file.exists() || !file.canRead()) return "PDF 文件不存在或已被删除"
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            fileDescriptor = pfd
+            val r = PdfRenderer(pfd)
+            renderer = r
+            pageCount = r.pageCount
+            if (pageCount <= 0) {
+                release()
+                return "PDF 没有可显示的页面"
+            }
+            pageIndex = startPage.coerceIn(0, pageCount - 1)
+            openPage(pageIndex)
+            null
+        } catch (e: Exception) {
+            release()
+            "无法打开 PDF：${e.message ?: e.javaClass.simpleName}（文件可能损坏、加密或格式不支持）"
+        }
+    }
+
+    /** 释放 native 资源：离开阅读页时调用，避免 fd 泄漏与位图堆积 */
+    fun release() {
         closePage()
-        renderer?.close()
+        runCatching { renderer?.close() }
         renderer = null
-        val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-        renderer = PdfRenderer(fd)
-        pageCount = renderer!!.pageCount
+        runCatching { fileDescriptor?.close() }
+        fileDescriptor = null
+        pageCount = 0
         pageIndex = 0
-        openPage(0)
+        zoom = 1f
+        renderZoom = 1f
+        invalidate()
     }
 
     private fun openPage(i: Int, keepZoom: Boolean = false) {
         closePage()
-        if (renderer == null) return
+        val r = renderer ?: return
         pageIndex = i.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        val page = renderer!!.openPage(pageIndex)
-        val baseW = width.coerceAtLeast(1)
-        // 翻页时复位缩放; 捏合后重渲染时保留当前 zoom
+        // View 还没测量完，等 onSizeChanged 再渲染，避免生成 1px 位图
+        if (width <= 0 || height <= 0) {
+            invalidate()
+            return
+        }
         if (!keepZoom) {
             zoom = 1f
             renderZoom = 1f
         }
         renderZoom = max(renderZoom, min(zoom, maxRenderZoom))
+        val page = try {
+            r.openPage(pageIndex)
+        } catch (e: Exception) {
+            invalidate()
+            return
+        }
+        val baseW = width.coerceAtLeast(1)
         var scale = baseW.toFloat() / page.width.coerceAtLeast(1) * renderZoom
         var bw = (baseW * renderZoom).toInt().coerceAtLeast(1)
         var bh = (page.height * scale).toInt().coerceAtLeast(1)
@@ -111,7 +157,13 @@ class PdfReaderView @JvmOverloads constructor(
             bw = (bw * shrink).toInt().coerceAtLeast(1)
             bh = (bh * shrink).toInt().coerceAtLeast(1)
         }
-        val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        val bmp = try {
+            Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        } catch (e: OutOfMemoryError) {
+            runCatching { page.close() }
+            invalidate()
+            return
+        }
         bmp.eraseColor(Color.WHITE)
         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         bitmap = bmp
@@ -126,13 +178,12 @@ class PdfReaderView @JvmOverloads constructor(
     val currentPageIndex: Int get() = pageIndex
 
     private fun closePage() {
-        currentPage?.close()
+        runCatching { currentPage?.close() }
         currentPage = null
         bitmap?.recycle()
         bitmap = null
     }
 
-    /** 缩放手势结束后: 太小则复位, 足够大则按当前 zoom 提升渲染分辨率 */
     private fun settleZoom() {
         if (zoom < 1.05f) {
             zoom = 1f
@@ -148,8 +199,9 @@ class PdfReaderView @JvmOverloads constructor(
 
     private fun resetPan() {
         val bmp = bitmap ?: return
-        val contentW = bmp.width * zoom
-        val contentH = bmp.height * zoom
+        val s = displayScale
+        val contentW = bmp.width * s
+        val contentH = bmp.height * s
         panX = (width - contentW) / 2f
         panY = (height - contentH) / 2f
         clampPan()
@@ -158,8 +210,9 @@ class PdfReaderView @JvmOverloads constructor(
     /** 平移范围钳制: 内容小于视图时居中, 大于视图时不露出边界 */
     private fun clampPan() {
         val bmp = bitmap ?: return
-        val contentW = bmp.width * zoom
-        val contentH = bmp.height * zoom
+        val s = displayScale
+        val contentW = bmp.width * s
+        val contentH = bmp.height * s
         panX = if (contentW <= width) (width - contentW) / 2f
         else panX.coerceIn(width - contentW, 0f)
         panY = if (contentH <= height) (height - contentH) / 2f
@@ -176,7 +229,7 @@ class PdfReaderView @JvmOverloads constructor(
         val bmp = bitmap ?: return
         canvas.save()
         canvas.translate(panX, panY)
-        canvas.scale(zoom, zoom)
+        canvas.scale(displayScale, displayScale)
         canvas.drawBitmap(bmp, 0f, 0f, null)
         canvas.restore()
     }
@@ -224,7 +277,6 @@ class PdfReaderView @JvmOverloads constructor(
                             else -> onCenterTap?.invoke()
                         }
                     } else {
-                        // 放大状态下单击仅呼出菜单, 避免误翻页打乱阅读位置
                         onCenterTap?.invoke()
                     }
                 }

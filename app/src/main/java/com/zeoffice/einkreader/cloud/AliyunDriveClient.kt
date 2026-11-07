@@ -131,6 +131,10 @@ class AliyunDriveClient(
             }
             dl.close()
             true
+        } catch (e: CancellationException) {
+            // 取消必须原样透传，否则会被 catch(Exception) 吞掉变成「下载失败」
+            runCatching { dest.delete() }
+            throw e
         } catch (e: Exception) {
             false
         }

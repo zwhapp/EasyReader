@@ -4,6 +4,7 @@ import com.zeoffice.einkreader.domain.model.BookFormat
 import com.zeoffice.einkreader.domain.model.ChapterContent
 import com.zeoffice.einkreader.domain.model.ParsedBook
 import com.zeoffice.einkreader.parser.BookParser
+import com.zeoffice.einkreader.parser.HtmlText
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.Charset
@@ -123,8 +124,10 @@ class MobiParser(private val bookFormat: BookFormat = BookFormat.MOBI) : BookPar
                     when (t) {
                         100 -> author = String(data, charset).trim()
                         101 -> author = String(data, charset).trim()
-                        201 -> coverRecord = String(data, Charsets.US_ASCII).trim().toIntOrNull() ?: -1
-                        202 -> thumbRecord = String(data, Charsets.US_ASCII).trim().toIntOrNull() ?: -1
+                        // EXTH 201/202 (coveroffset / thumboffset) 是 4 字节大端整数，
+                        // 旧实现按 ASCII 字符串解析必然得到 -1，导致封面提取失败。
+                        201 -> coverRecord = if (data.size >= 4) u32(data, 0) else -1
+                        202 -> thumbRecord = if (data.size >= 4) u32(data, 0) else -1
                     }
                     q += len
                     n++
@@ -158,11 +161,11 @@ class MobiParser(private val bookFormat: BookFormat = BookFormat.MOBI) : BookPar
             val decoded = reader.unpack(rec)
             body.write(decoded)
         }
-        val text = stripHtml(String(body.toByteArray(), charset))
+        val text = HtmlText.toPlainText(String(body.toByteArray(), charset))
         if (text.isBlank()) throw Exception("未能从文件中提取到文本 (可能为 DRM 加密或空书)")
 
-        // 章节: 复用 TXT 的章节标记逻辑
-        val lines = text.split("\n")
+        // 章节: 复用 TXT 的章节标记逻辑（统一 CRLF；保留首个标记之前的序言）
+        val lines = text.split(Regex("\r?\n"))
         val chapterStarts = lines.withIndex()
             .filter { (_, line) -> isChapterMarker(line) }
             .map { it.index to it.value.trim() }
@@ -171,10 +174,20 @@ class MobiParser(private val bookFormat: BookFormat = BookFormat.MOBI) : BookPar
                 ChapterContent(i, "Part ${i + 1}", chunk.joinToString("\n"))
             }
         } else {
-            chapterStarts.mapIndexed { idx, (start, t) ->
-                val end = if (idx < chapterStarts.size - 1) chapterStarts[idx + 1].first else lines.size
-                ChapterContent(idx, t, lines.subList(start + 1, end).joinToString("\n"), startLine = start)
+            val list = mutableListOf<ChapterContent>()
+            val firstStart = chapterStarts.first().first
+            if (firstStart > 0) {
+                val head = lines.subList(0, firstStart).joinToString("\n")
+                if (head.isNotBlank()) list += ChapterContent(0, "前言", head)
             }
+            chapterStarts.forEachIndexed { idx, (start, t) ->
+                val end = if (idx < chapterStarts.size - 1) chapterStarts[idx + 1].first else lines.size
+                val bodyText = lines.subList(start + 1, end).joinToString("\n")
+                if (bodyText.isBlank()) return@forEachIndexed
+                list += ChapterContent(list.size, t, bodyText, startLine = start)
+            }
+            if (list.isEmpty()) list += ChapterContent(0, "正文", text)
+            list
         }
 
         // 封面: 优先 EXTH 201 绝对记录号; 否则尝试 firstResource 偏移; 再试 202 缩略图
@@ -436,24 +449,8 @@ class MobiParser(private val bookFormat: BookFormat = BookFormat.MOBI) : BookPar
         return if (start == 0) data else data.copyOfRange(start, data.size)
     }
 
-    private fun stripHtml(html: String): String {
-        var s = html
-        s = s.replace(Regex("(?is)<(script|style)[^>]*>.*?</\\1>"), "")
-        s = s.replace(Regex("(?i)<(mbp:pagebreak|hr)\\s*/?>"), "\n\n")
-        s = s.replace(Regex("(?i)<br\\s*/?>"), "\n")
-        s = s.replace(Regex("(?i)</(p|div|h[1-6]|li|blockquote|tr)>"), "\n")
-        s = s.replace(Regex("(?i)<h([1-6])[^>]*>"), "\n")
-        s = s.replace(Regex("<[^>]+>"), "")
-        s = s.replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&#39;", "'")
-            .replace("&#160;", " ")
-        return s.replace(Regex("\n{3,}"), "\n\n").trim()
-    }
+    // HTML → 文本统一交给 HtmlText（与 EPUB 共用：块级标签换行、数字实体、单次解码），
+    // 原先这里连续 .replace 会二次解码，且不认识 &#x4E2D; 这类中文数字实体。
 
     /** 章节标记判断 (与 TxtParser 一致) */
     private fun isChapterMarker(line: String): Boolean {

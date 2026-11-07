@@ -145,28 +145,29 @@ class WebDavClient(
         try {
             val url = normalize(file.path)
             val req = Request.Builder().url(url).header("Authorization", authHeader).build()
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful) {
-                resp.close()
-                return@withContext false
-            }
-            val total = resp.body?.contentLength() ?: -1L
-            resp.body?.byteStream()?.use { input ->
-                dest.outputStream().use { out ->
-                    val buf = ByteArray(8192)
-                    var read: Int
-                    var downloaded = 0L
-                    while (input.read(buf).also { read = it } != -1) {
-                        out.write(buf, 0, read)
-                        downloaded += read
-                        onProgress(downloaded, total)
-                        // 阻塞读取循环中检查协程是否已取消, 使取消能真正中断下载
-                        if (!coroutineContext.isActive) throw CancellationException("导入已取消")
+            // Response 用 use 包裹：取消 / 异常路径也会关闭连接，不再泄漏 socket
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext false
+                val total = resp.body?.contentLength() ?: -1L
+                resp.body?.byteStream()?.use { input ->
+                    dest.outputStream().use { out ->
+                        val buf = ByteArray(8192)
+                        var read: Int
+                        var downloaded = 0L
+                        while (input.read(buf).also { read = it } != -1) {
+                            out.write(buf, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, total)
+                            // 阻塞读取循环中检查协程是否已取消, 使取消能真正中断下载
+                            if (!coroutineContext.isActive) throw CancellationException("导入已取消")
+                        }
                     }
                 }
+                true
             }
-            resp.close()
-            true
+        } catch (e: CancellationException) {
+            // 用户主动取消必须透传，否则会被下面的 catch(Exception) 吞掉，取消语义丢失
+            throw e
         } catch (e: Exception) {
             false
         }

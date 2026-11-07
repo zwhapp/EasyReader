@@ -139,6 +139,10 @@ class BaiduPanClient(
             }
             dl.close()
             true
+        } catch (e: CancellationException) {
+            // 取消必须原样透传：旧实现把它包装成 IOException，取消导入会被误报为「网络错误」
+            runCatching { dest.delete() }
+            throw e
         } catch (e: IOException) {
             throw e
         } catch (e: Exception) {

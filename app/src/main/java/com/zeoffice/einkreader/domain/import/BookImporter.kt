@@ -54,6 +54,12 @@ object BookImporter {
         if (format == BookFormat.PDF) return null
         val parser = com.zeoffice.einkreader.parser.BookParserFactory
             .createForExtension(filePath.substringAfterLast('.', ""), format) ?: return null
-        return runCatching { parser.parse(filePath) }.getOrNull()
+        // 只捕获 Exception，不再用 runCatching 吞掉 OutOfMemoryError 等 Error：
+        // 超大 / 损坏文件应作为真实故障上报，而不是伪装成「文件损坏」继续入库。
+        return try {
+            parser.parse(filePath)
+        } catch (e: Exception) {
+            null
+        }
     }
 }

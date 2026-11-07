@@ -177,15 +177,60 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
 
             Divider()
 
-            // 亮度 (应用内调暗)
+            // ===== 正文智能整理 / 自适应排版 (v0.4.8) =====
+            Text("正文整理与自适应排版", style = MaterialTheme.typography.titleSmall)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("智能整理正文", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "自动删除多余空行、行首行尾空格、全角空格，合并 TXT 硬换行为自然段。" +
+                            "诗歌、歌词、代码类书籍可关闭此开关。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.cleanText,
+                    onCheckedChange = { vm.saveSettings(settings.copy(cleanText = it)) }
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("段落首行缩进", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "每段首行缩进两个汉字宽；内容区随屏幕尺寸自动分页，横屏/平板限制行宽并居中，" +
+                            "旋转或改字号后按阅读位置还原。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = settings.firstLineIndent,
+                    onCheckedChange = { vm.saveSettings(settings.copy(firstLineIndent = it)) }
+                )
+            }
+
+            Divider()
+
+            // 亮度 (应用内调暗)：拖动只改本地值，松手才写 DB，避免每帧一次数据库写入
+            var brightnessValue by remember(settings.brightness) { mutableStateOf(settings.brightness) }
             Text("亮度（应用内调暗）", style = MaterialTheme.typography.titleSmall)
             Slider(
-                value = settings.brightness,
-                onValueChange = { vm.saveSettings(settings.copy(brightness = it)) },
+                value = brightnessValue,
+                onValueChange = { brightnessValue = it },
+                onValueChangeFinished = { vm.saveSettings(settings.copy(brightness = brightnessValue)) },
                 valueRange = 0.3f..1f
             )
             Text(
-                "当前亮度：${String.format("%.0f", settings.brightness * 100)}%",
+                "当前亮度：${String.format("%.0f", brightnessValue * 100)}%",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

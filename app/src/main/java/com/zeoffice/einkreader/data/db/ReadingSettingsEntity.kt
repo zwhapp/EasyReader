@@ -18,6 +18,9 @@ data class ReadingSettingsEntity(
     val fontFamily: String,     // sans / serif / song
     val pageTurn: String,       // horizontal / vertical / scroll
     val textAlign: String,      // left / justify
+    // ===== 正文智能整理 / 排版自适应 (v0.4.8, DB v9) =====
+    val cleanText: Boolean = true,       // 自动清理多余空行/空格、合并硬换行
+    val firstLineIndent: Boolean = true, // 段落首行缩进
     val brightness: Float,      // 1f = 不dim, <1 越暗
     val keepScreenOn: Boolean,
     val einkMode: Boolean,      // 电纸书模式 (总开关)

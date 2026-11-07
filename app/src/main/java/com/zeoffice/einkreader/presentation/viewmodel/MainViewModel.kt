@@ -31,6 +31,7 @@ import com.zeoffice.einkreader.domain.model.ReadingSettings
 import com.zeoffice.einkreader.domain.model.sync.ConflictPolicy
 import com.zeoffice.einkreader.domain.model.sync.SyncDirection
 import com.zeoffice.einkreader.domain.model.sync.SyncStatus
+import com.zeoffice.einkreader.reader.TextCleaner
 import com.zeoffice.einkreader.updater.GitHubRelease
 import com.zeoffice.einkreader.updater.GitHubUpdater
 import com.zeoffice.einkreader.updater.InstallResult
@@ -219,9 +220,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun loadAccounts() = vmScope.launch { _accounts.value = cloudRepo.getAll() }
 
     fun saveSettings(s: ReadingSettings) = vmScope.launch {
+        // 「正文智能整理」开关会改变章节文本（清洗后长度不同），必须让当前书重新解析，
+        // 否则阅读页仍拿旧的缓存文本，进度/书签偏移也会对不上。
+        val textPolicyChanged = _settings.value.cleanText != s.cleanText
         _settings.value = s
         applyKeyConfig(s)
         settingsRepo.saveSettings(s)
+        if (textPolicyChanged) refreshParsed()
     }
 
     /** 把自定义兼容键值 / 诊断开关同步到物理翻页键分发器 */
@@ -291,6 +296,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val format = BookFormat.fromFilename(displayName) ?: BookFormat.TXT
         val file = BookImporter.materializeUri(app, uri, displayName)
         val parsed = BookImporter.parse(file.absolutePath, format)
+        // 解析失败的书不再静默入库（旧版会生成一本打不开的占位书）
+        if (format != BookFormat.PDF && !hasReadableContent(parsed)) {
+            runCatching { file.delete() }
+            throw Exception("无法解析此书（文件可能损坏、编码不支持或受 DRM 保护）")
+        }
         val title = parsed?.title?.takeIf { it.isNotBlank() }
             ?: displayName.substringBeforeLast('.')
         val entity = BookEntity(
@@ -362,6 +372,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 val parsed = BookImporter.parse(dest.absolutePath, format)
+                if (format != BookFormat.PDF && !hasReadableContent(parsed)) {
+                    runCatching { dest.delete() }
+                    throw Exception("无法解析此书（文件可能损坏、编码不支持或受 DRM 保护）")
+                }
                 val title = parsed?.title?.takeIf { it.isNotBlank() }
                     ?: file.name.substringBeforeLast('.')
                 val entity = BookEntity(
@@ -396,28 +410,56 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         cloudImportJob = null
     }
 
+    /** 已成功解析的书路径：配置变更（旋转/分屏）时 ViewModel 仍存活，避免整本书重复解析 */
+    private var openedBookPath: String? = null
+    private var lastOpenedBook: BookEntity? = null
+
+    private fun hasReadableContent(p: ParsedBook?): Boolean =
+        p != null && p.chapters.any { it.text.isNotBlank() }
+
+    /** 对所有章节做正文整理；过滤清洗后变空的章节并重新连续编号 */
+    private fun cleanParsed(p: ParsedBook): ParsedBook {
+        val chapters = p.chapters
+            .map { it.copy(text = TextCleaner.clean(it.text)) }
+            .filter { it.text.isNotBlank() }
+            .mapIndexed { i, ch -> ch.copy(orderIndex = i) }
+        return p.copy(chapters = chapters.ifEmpty { p.chapters })
+    }
+
     /** 打开书籍 (PDF 返回 null, 由阅读器用 PdfRenderer) */
     fun openBook(book: BookEntity) = vmScope.launch(Dispatchers.IO) {
         _openError.value = null
         try {
             val format = BookFormat.valueOf(book.format)
+            lastOpenedBook = book
             if (format == BookFormat.PDF) {
                 _parsedBook.value = null
+                openedBookPath = null
                 return@launch
             }
+            // 配置变更时 ViewModel 不重建，parsedBook 已缓存；跳过重复解析避免竞态
+            if (openedBookPath == book.filePath && _parsedBook.value != null) return@launch
             val parsed = BookImporter.parse(book.filePath, format)
-            if (parsed == null || parsed.chapters.isEmpty() ||
-                parsed.chapters.all { it.text.isBlank() }
-            ) {
+            if (!hasReadableContent(parsed)) {
                 _parsedBook.value = null
+                openedBookPath = null
                 _openError.value = "无法解析此书 (${format.label})：文件可能损坏或受 DRM 保护"
             } else {
-                _parsedBook.value = parsed
+                val result = if (_settings.value.cleanText) cleanParsed(parsed!!) else parsed
+                _parsedBook.value = result
+                openedBookPath = book.filePath
             }
         } catch (e: Exception) {
             _parsedBook.value = null
+            openedBookPath = null
             _openError.value = "无法打开此书：${e.message ?: "解析失败"}"
         }
+    }
+
+    /** 正文整理开关变化后重新解析当前书 */
+    fun refreshParsed() {
+        openedBookPath = null
+        lastOpenedBook?.let { openBook(it) }
     }
 
     fun clearOpenError() {
@@ -426,28 +468,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun clearParsed() {
         _parsedBook.value = null
+        openedBookPath = null
+        lastOpenedBook = null
     }
 
     fun clearImportIdle() {
         if (_importStatus.value !is ImportStatus.Idle) _importStatus.value = ImportStatus.Idle
     }
 
+    /** 快速翻页时串行化写进度：新值覆盖旧值，避免多个协程乱序写导致进度回退 */
+    private var savePositionJob: Job? = null
+
     fun savePosition(
         bookId: Int,
         chapterIndex: Int,
         charOffset: Int,
         progressPercent: Int
-    ) = vmScope.launch(Dispatchers.IO) {
-        val b = bookRepo.getBook(bookId) ?: return@launch
-        bookRepo.update(
-            b.copy(
+    ) {
+        savePositionJob?.cancel()
+        savePositionJob = vmScope.launch(Dispatchers.IO) {
+            val b = bookRepo.getBook(bookId) ?: return@launch
+            val updated = b.copy(
                 chapterIndex = chapterIndex,
                 charOffset = charOffset,
                 progressPercent = progressPercent,
                 progressUpdatedAt = System.currentTimeMillis()
             )
-        )
-        loadBooks()
+            bookRepo.update(updated)
+            // 只更新内存中的这一条，不再 loadBooks() 全表刷新（会触发阅读页重组/卡顿）
+            _books.value = _books.value.map { if (it.id == bookId) updated else it }
+        }
     }
 
     fun deleteBook(book: BookEntity) = vmScope.launch(Dispatchers.IO) {

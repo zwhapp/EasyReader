@@ -58,8 +58,15 @@ class WebDavSyncManager(
         retry { client.createDir(root) }
         if (syncFiles) retry { client.createDir(booksDirUrl) }
 
-        // 2. 读取服务器索引 (404 -> 空索引; 网络错误 -> 抛出由上层转为错误结果)
-        val remoteIndex = client.getText(indexUrl)?.let { SyncEngine.parseIndex(it) }
+        // 2. 读取服务器索引 (404 -> 空索引; 解析失败 -> 中止，绝不写回，避免清空远端书库)
+        val remoteIndex = try {
+            client.getText(indexUrl)?.let { SyncEngine.parseIndex(it) }
+        } catch (e: Exception) {
+            return@withContext SyncResult(
+                success = false,
+                errors = listOf(e.message ?: "远端索引解析失败，已中止同步")
+            )
+        }
         val remoteBooks = remoteIndex?.books?.associateBy { it.key } ?: emptyMap()
 
         // 3. 本地视图 + 基线

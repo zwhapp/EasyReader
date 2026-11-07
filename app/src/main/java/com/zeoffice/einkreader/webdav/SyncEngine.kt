@@ -219,7 +219,11 @@ object SyncEngine {
                 books = books
             )
         } catch (e: Exception) {
-            LibraryIndex()
+            // 旧实现在这里静默返回空索引，同步流程会据此用「只含本地书」的索引覆盖
+            // 服务器 library.json，导致远端独有书籍条目永久丢失。解析失败必须中止同步。
+            throw IllegalArgumentException(
+                "远端同步索引解析失败，已中止同步以保护服务器数据：${e.message ?: e.javaClass.simpleName}", e
+            )
         }
     }
 

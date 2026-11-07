@@ -13,6 +13,9 @@ data class ReadingSettings(
     val fontFamily: String = "sans",  // sans / serif / song
     val pageTurn: String = "horizontal", // horizontal / vertical / scroll
     val textAlign: String = "justify",// left / justify
+    // ===== 正文智能整理 / 排版自适应 (v0.4.8) =====
+    val cleanText: Boolean = true,     // 自动清理多余空行/空格、合并 TXT 硬换行为自然段
+    val firstLineIndent: Boolean = true, // 段落首行缩进 2 个汉字宽
     val brightness: Float = 1f,       // 1f 不dim, 越小越暗
     val keepScreenOn: Boolean = true,
     // ===== 电纸书（墨水屏）适配 =====

@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -129,17 +129,38 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v8 → v9: reading_settings 新增「正文智能整理」两个开关。
+         *  - cleanText：自动删除多余空行/空格、合并 TXT 硬换行（默认开）
+         *  - firstLineIndent：段落首行缩进 2 字（默认开）
+         * 幂等；老用户升级后默认开启新排版，可在设置里单独关闭。
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if (!db.hasColumn("reading_settings", "cleanText")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN cleanText INTEGER NOT NULL DEFAULT 1")
+                }
+                if (!db.hasColumn("reading_settings", "firstLineIndent")) {
+                    db.execSQL("ALTER TABLE reading_settings ADD COLUMN firstLineIndent INTEGER NOT NULL DEFAULT 1")
+                }
+            }
+        }
+
         fun get(context: Context): EinkDatabase {
+            // 外层快速路径 + 同步块内二次判空：避免两个线程同时看到 null 时各建一个实例。
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
+                INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     EinkDatabase::class.java,
                     "eink_reader.db"
-                ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
-                    .fallbackToDestructiveMigration()
+                ).addMigrations(
+                    MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                )
+                    // 不使用 fallbackToDestructiveMigration：迁移链 2→9 已完整，
+                    // 任何缺失迁移都应报错而不是静默清空书库/进度/书签。
                     .build()
-                INSTANCE = instance
-                instance
+                    .also { INSTANCE = it }
             }
         }
     }
