@@ -447,9 +447,9 @@ private fun AutoSyncBanner(notice: AutoSyncNotice, onDismiss: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(
                     when (notice) {
-                        is AutoSyncNotice.Syncing -> "WebDAV 自动同步中"
-                        is AutoSyncNotice.Done -> "WebDAV 自动同步"
-                        is AutoSyncNotice.Error -> "WebDAV 自动同步失败"
+                        is AutoSyncNotice.Syncing -> "自动同步中"
+                        is AutoSyncNotice.Done -> "自动同步完成"
+                        is AutoSyncNotice.Error -> "自动同步失败"
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isError) MaterialTheme.colorScheme.onErrorContainer

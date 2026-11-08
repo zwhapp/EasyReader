@@ -132,6 +132,7 @@ fun BaiduPanScreen(nav: NavHostController, vm: MainViewModel) {
                     }
                 },
                 actions = {
+                    TextButton(onClick = { nav.navigate("sync") }) { Text("同步") }
                     if (baiduAccount != null) {
                         TextButton(onClick = {
                             // 刷新目录

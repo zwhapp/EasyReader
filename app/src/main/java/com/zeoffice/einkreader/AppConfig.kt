@@ -5,6 +5,6 @@ package com.zeoffice.einkreader
  * 使用常量为准，避免对 AGP 自动生成 BuildConfig 的依赖。
  */
 object AppConfig {
-    const val VERSION_NAME = "0.4.9"
-    const val VERSION_CODE = 22
+    const val VERSION_NAME = "0.5.0"
+    const val VERSION_CODE = 23
 }

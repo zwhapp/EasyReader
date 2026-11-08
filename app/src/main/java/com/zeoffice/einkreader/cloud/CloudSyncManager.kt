@@ -1,49 +1,53 @@
-package com.zeoffice.einkreader.webdav
+package com.zeoffice.einkreader.cloud
 
 import android.content.Context
 import com.zeoffice.einkreader.data.db.BookEntity
-import com.zeoffice.einkreader.data.db.SyncStateEntity
 import com.zeoffice.einkreader.data.db.SyncStateDao
+import com.zeoffice.einkreader.data.db.SyncStateEntity
 import com.zeoffice.einkreader.data.repository.BookRepository
 import com.zeoffice.einkreader.data.repository.BookmarkRepository
 import com.zeoffice.einkreader.domain.import.BookImporter
 import com.zeoffice.einkreader.domain.import.CoverFactory
 import com.zeoffice.einkreader.domain.model.BookFormat
 import com.zeoffice.einkreader.domain.model.CloudAccount
-import com.zeoffice.einkreader.domain.model.CloudFile
 import com.zeoffice.einkreader.domain.model.sync.*
+import com.zeoffice.einkreader.webdav.SyncEngine
+import com.zeoffice.einkreader.webdav.SyncMerge
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
 import java.io.File
 import java.io.IOException
 
 /**
- * WebDAV 同步编排 (网络 + 数据库)。
+ * 多后端同步编排（WebDAV / 百度网盘 / 阿里云盘共用）。
  *
- * 流程: 确保目录 -> 拉取服务器索引 -> 计算计划 -> 按方向传输书籍文件
- *       -> 元数据按字段/集合归并并同时收敛两端 -> 写回 library.json -> 更新本地基线。
+ * 由 v0.4.9 的 WebDavSyncManager 泛化而来：文件传输全部走 [SyncTransport] 的相对路径语义，
+ * 三个后端的索引格式（library.json v2）、冲突归并模型（HLC / LWW-Element-Set）完全一致，
+ * 因此任意两个后端之间也可用同一份数据互相接力。
  *
- * 一致性模型（v0.4.9 起）:
- *  - 书籍文件：内容 sha256 决定是否真的需要重传，不再被 mtime 变化误触发；
- *  - 阅读进度：单值 LWW，胜负由 HLC 逻辑时钟裁决， LOCAL/REMOTE_WINS 仍可强制覆盖；
- *  - 书签笔记：LWW-Element-Set，按稳定 id 归并，删除写成墓碑以便跨设备传播。
- * 「两端都改」不再整条二选一，因此一端加书签、另一端只翻页不会互相抹掉。
+ * 流程：准备目录 → 拉索引 → plan 定文件方向 → 传文件 → 元数据按字段/集合归并并写回两端
+ *       → 写回 library.json → 按后端隔离更新本地基线。
  *
- * 容错: 先传文件再写索引；索引写入失败不影响已传文件，下次同步会重试补齐。
+ * 一致性模型（v0.4.9 起）：
+ *  - 书籍文件：sha256 内容哈希决定是否重传；
+ *  - 阅读进度：单值 LWW，由 HLC 裁决（LOCAL/REMOTE_WINS 可强制）；
+ *  - 书签笔记：LWW-Element-Set 按稳定 id 归并，删除写成墓碑跨设备传播。
+ *
+ * 容错：先传文件再写索引；索引写入失败不影响已传文件，下次同步重试补齐。
+ * 任一网络/鉴权错误都返回 SyncResult(success=false, errors)，不抛异常击穿 UI。
  */
-class WebDavSyncManager(
+class CloudSyncManager(
     private val context: Context,
     private val bookRepo: BookRepository,
     private val bookmarkRepo: BookmarkRepository,
     private val syncStateDao: SyncStateDao
 ) {
     /**
-     * 执行一次同步。
      * @param onProgress 进度回调 (文案, 已完成数, 总数)
-     * @return 同步结果汇总
+     * @param onAccountUpdated 授权凭据轮换时回写账户（阿里云盘 refresh_token 会变）
      */
     suspend fun sync(
         account: CloudAccount,
@@ -51,34 +55,50 @@ class WebDavSyncManager(
         policy: ConflictPolicy,
         syncFiles: Boolean,
         syncBookmarks: Boolean = true,
-        onProgress: suspend (msg: String, done: Int, total: Int) -> Unit
+        onProgress: suspend (msg: String, done: Int, total: Int) -> Unit,
+        onAccountUpdated: suspend (CloudAccount) -> Unit = {}
     ): SyncResult = withContext(Dispatchers.IO) {
-        val client = WebDavClient(account.host, account.username, account.password)
-        val root = client.childUrl(account.host, SyncEngine.ROOT_FOLDER)
-        val booksDirUrl = client.childUrl(root, SyncEngine.BOOKS_FOLDER)
-        val indexUrl = client.childUrl(root, SyncEngine.INDEX_FILE)
-
-        // 1. 确保目录存在 (已存在时 createDir 返回 true)
-        retry { client.createDir(root) }
-        if (syncFiles) retry { client.createDir(booksDirUrl) }
-
-        // 2. 读取服务器索引 (404 -> 空索引; 解析失败 -> 中止，绝不写回，避免清空远端书库)
-        val remoteIndex = try {
-            client.getText(indexUrl)?.let { SyncEngine.parseIndex(it) }
-        } catch (e: Exception) {
+        val transport = try {
+            SyncTransportFactory.create(account)
+        } catch (e: Throwable) {
             return@withContext SyncResult(
                 success = false,
-                errors = listOf(e.message ?: "远端索引解析失败，已中止同步")
+                errors = listOf(e.message ?: "不支持的同步账户")
+            )
+        }
+        val backend = transport.backendName
+        val scope = SyncLayout.scopeOf(account)
+
+        // 1. 准备同步目录（已存在视为成功）
+        try {
+            retry { transport.prepare(syncFiles) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return@withContext SyncResult(
+                success = false,
+                errors = listOf("$backend 同步目录准备失败：${e.message ?: "未知错误"}（目录：${transport.remoteRoot}）")
+            )
+        }
+
+        // 2. 读取远端索引（不存在 -> 空索引；解析失败 -> 中止，绝不写回，避免清空远端书库）
+        val remoteIndex = try {
+            transport.readIndex()?.let { SyncEngine.parseIndex(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return@withContext SyncResult(
+                success = false,
+                errors = listOf(e.message ?: "$backend 远端索引读取失败，已中止同步")
             )
         }
         val remoteBooks = remoteIndex?.books?.associateBy { it.key } ?: emptyMap()
 
-        // 3. 本地视图 + 基线
-        val localBooks = bookRepo.getAllBooks()
-        val localViews = localBooks.map { SyncEngine.localView(it) }
-        val baselines = syncStateDao.getAll().associateBy { it.bookKey }
+        // 3. 本地视图 + 按后端隔离的基线（兼容 v0.4.9 无前缀旧行）
+        val localViews = bookRepo.getAllBooks().map { SyncEngine.localView(it) }
+        val baselines = SyncLayout.baselines(scope, syncStateDao.getAll())
 
-        // 4. 计算计划 (只决定书籍文件往哪边走；元数据归并独立进行)
+        // 4. 计算计划（只决定书籍文件往哪边走；元数据归并独立进行）
         val plan = SyncEngine.plan(localViews, remoteBooks, baselines, direction, policy)
 
         var pushed = 0
@@ -112,7 +132,6 @@ class WebDavSyncManager(
                     SyncAction.UPLOAD -> {
                         val lv = local ?: throw IOException("本地记录缺失")
                         val rel = SyncEngine.bookRelPath(item.key, lv.format)
-                        val url = client.childUrl(root, rel)
                         val file = File(lv.filePath)
                         val needFile = syncFiles && (remote == null ||
                             SyncMerge.needsFileUpload(
@@ -121,7 +140,7 @@ class WebDavSyncManager(
                             ))
                         if (needFile) {
                             if (!file.exists()) throw IOException("本地文件缺失")
-                            val ok = retry { client.upload(url, file) { _, _ -> } }
+                            val ok = retry { transport.uploadBook(rel, file) }
                             if (!ok) throw IOException("上传文件失败")
                         }
                         pushed++
@@ -132,8 +151,8 @@ class WebDavSyncManager(
                     }
 
                     SyncAction.DOWNLOAD -> {
-                        val rv = remote ?: throw IOException("服务器记录缺失")
-                        val url = client.childUrl(root, rv.file)
+                        val rv = remote ?: throw IOException("远端记录缺失")
+                        val rel = rv.file.ifBlank { SyncEngine.bookRelPath(item.key, rv.format) }
                         if (local == null) {
                             // 新书: 需下载文件 (除非关闭了书籍文件同步)
                             if (!syncFiles) {
@@ -142,11 +161,10 @@ class WebDavSyncManager(
                             } else {
                                 val ext = SyncEngine.extOf(rv.format)
                                 val dest = BookImporter.uniqueName(context, "${rv.title}.${ext}")
-                                val ok = retry {
-                                    client.download(cloudFile(rv.title, url), dest) { _, _ -> }
-                                }
+                                val ok = retry { downloadAtomic(transport, rel, dest) }
                                 if (!ok) throw IOException("下载文件失败")
-                                val fmt = runCatching { BookFormat.valueOf(rv.format) }.getOrDefault(BookFormat.TXT)
+                                val fmt = runCatching { BookFormat.valueOf(rv.format) }
+                                    .getOrDefault(BookFormat.TXT)
                                 val newId = bookRepo.insert(
                                     BookEntity(
                                         title = rv.title,
@@ -155,8 +173,8 @@ class WebDavSyncManager(
                                         filePath = dest.absolutePath,
                                         fileSize = dest.length(),
                                         importedAt = System.currentTimeMillis(),
-                                        source = "webdav",
-                                        remotePath = url,
+                                        source = account.provider,
+                                        remotePath = "${account.provider}:$rel",
                                         chapterCount = 0,
                                         progressUpdatedAt = rv.updatedAt,
                                         progressStamp = rv.progressStamp,
@@ -177,17 +195,14 @@ class WebDavSyncManager(
                                     bookmarkRepo.replaceWithMerged(newId, SyncMerge.remoteOps(rv))
                                 }
                                 // 记录同步基线: 否则下次同步会把"刚下载的书"误判为两端均改动(冲突)
-                                syncStateDao.upsert(
-                                    SyncStateEntity(
-                                        item.key,
-                                        SyncEngine.signature(
-                                            rv.progress.chapterIndex, rv.progress.charOffset,
-                                            rv.progress.progressPercent, rv.progress.lastPage,
-                                            rv.progress.readingTimeSec, dest.lastModified(), dest.length()
-                                        ),
-                                        rv.updatedAt,
-                                        System.currentTimeMillis()
-                                    )
+                                upsertBaseline(
+                                    scope, item.key,
+                                    SyncEngine.signature(
+                                        rv.progress.chapterIndex, rv.progress.charOffset,
+                                        rv.progress.progressPercent, rv.progress.lastPage,
+                                        rv.progress.readingTimeSec, dest.lastModified(), dest.length()
+                                    ),
+                                    rv.updatedAt
                                 )
                                 pulled++
                                 if (item.conflict) {
@@ -196,14 +211,14 @@ class WebDavSyncManager(
                                 }
                             }
                         } else {
-                            // 已存在: 只有文件内容真的不同才重传；进度不再被无条件覆盖
+                            // 已存在: 只有文件内容真的不同才重传；进度不再被无条件覆盖。
+                            // v2 索引里 contentHash 为空表示「上次关闭文件同步，只传了元数据」，此时跳过下载。
                             val file = File(local.filePath)
-                            if (syncFiles && file.exists() &&
+                            val remoteHasFile = rv.contentHash.isNotBlank() || (remoteIndex?.version ?: 1) < 2
+                            if (syncFiles && remoteHasFile && file.exists() &&
                                 SyncMerge.needsFileUpload(rv.contentHash, rv.size, local.contentHash, local.size)
                             ) {
-                                val ok = retry {
-                                    client.download(cloudFile(rv.title, url), file) { _, _ -> }
-                                }
+                                val ok = retry { downloadAtomic(transport, rel, file) }
                                 if (!ok) throw IOException("更新文件失败")
                             }
                             updated++
@@ -214,15 +229,36 @@ class WebDavSyncManager(
                         }
                     }
 
-                    SyncAction.NONE -> skipped++
+                    SyncAction.NONE -> {
+                        skipped++
+                        // 上次同步关闭了「书籍文件同步」，索引里只有元数据（contentHash 为空）。
+                        // 现在重新开启文件同步，plan 仍判定无变化，需在此补齐远端文件，
+                        // 否则其它设备永远下载不到这本书。
+                        if (syncFiles && local != null && remote != null &&
+                            (remoteIndex?.version ?: 1) >= 2 && remote.contentHash.isBlank()
+                        ) {
+                            val file = File(local.filePath)
+                            if (file.exists()) {
+                                val rel = SyncEngine.bookRelPath(item.key, local.format)
+                                val ok = retry { transport.uploadBook(rel, file) }
+                                if (!ok) throw IOException("补传书籍文件失败")
+                                mergedEntries[item.key] = remote.copy(
+                                    contentHash = local.contentHash,
+                                    size = local.size,
+                                    file = remote.file.ifBlank { rel }
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // 收敛: 两端都存在时，把归并结果同时写回本地与索引，避免"整条覆盖"丢数据
                 if (merge != null && local != null && remote != null) {
-                    applyMerge(local, merge, syncBookmarks)
+                    applyMerge(local, merge, syncBookmarks, account.provider)
                     val (live, tombs) = SyncMerge.splitOps(merge.bookmarkOps)
                     val rel = remote.file.ifBlank { SyncEngine.bookRelPath(item.key, local.format) }
-                    val hash = if (item.action == SyncAction.DOWNLOAD && remote.contentHash.isNotBlank())
+                    val hash = if (!syncFiles && remote.contentHash.isBlank()) ""
+                    else if (item.action == SyncAction.DOWNLOAD && remote.contentHash.isNotBlank())
                         remote.contentHash else local.contentHash.ifBlank { remote.contentHash }
                     val size = if (item.action == SyncAction.DOWNLOAD && remote.size > 0)
                         remote.size else local.size
@@ -240,14 +276,11 @@ class WebDavSyncManager(
                     )
                     // 基线必须反映「归并后」的本地状态，否则下次会误判为本地又改了
                     val finalBook = bookRepo.getBook(local.id)
-                    syncStateDao.upsert(
-                        SyncStateEntity(
-                            item.key,
-                            if (finalBook != null) signatureOf(finalBook, File(finalBook.filePath))
-                            else local.signature,
-                            mergedAt,
-                            System.currentTimeMillis()
-                        )
+                    upsertBaseline(
+                        scope, item.key,
+                        if (finalBook != null) signatureOf(finalBook, File(finalBook.filePath))
+                        else local.signature,
+                        mergedAt
                     )
                 } else if (item.action == SyncAction.UPLOAD && local != null && remote == null) {
                     // 仅本地独有: 无冲突可能，整条上传（活书签与墓碑一起写，便于他端接收删除）
@@ -256,11 +289,11 @@ class WebDavSyncManager(
                         view = local,
                         fileRelPath = SyncEngine.bookRelPath(item.key, local.format),
                         bookmarks = if (syncBookmarks) live else emptyList(),
-                        tombstones = if (syncBookmarks) tombs else emptyList()
+                        tombstones = if (syncBookmarks) tombs else emptyList(),
+                        // 关闭文件同步时留空哈希作标记，下次开启会走 NONE 分支补传
+                        contentHash = if (syncFiles) local.contentHash else ""
                     )
-                    syncStateDao.upsert(
-                        SyncStateEntity(item.key, local.signature, local.updatedAt, System.currentTimeMillis())
-                    )
+                    upsertBaseline(scope, item.key, local.signature, local.updatedAt)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -279,14 +312,21 @@ class WebDavSyncManager(
                 updatedAt = System.currentTimeMillis(),
                 books = mergedEntries.values.toList()
             )
-            val ok = retry { client.uploadText(indexUrl, SyncEngine.buildIndex(mergedIndex)) }
-            if (!ok) throw IOException("索引写入被服务器拒绝")
+            val ok = retry { transport.writeIndex(SyncEngine.buildIndex(mergedIndex)) }
+            if (!ok) throw IOException("索引写入被拒绝")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             errors.add("索引写入失败：${e.message ?: "未知错误"}（书籍文件可能已同步，下次将自动重试）")
         }
 
+        // 7. 凭据轮换（阿里云盘 refresh_token）落库，避免下次同步失效
+        runCatching {
+            val updatedAccount = transport.updatedAccount()
+            if (updatedAccount != null && updatedAccount != account) onAccountUpdated(updatedAccount)
+        }
+
         val success = failed == 0 && errors.isEmpty()
-        val message = buildMessage(pushed, pulled, updated, conflicts, failed, skipped)
         SyncResult(
             success = success,
             pushed = pushed,
@@ -298,7 +338,21 @@ class WebDavSyncManager(
             total = total,
             errors = errors,
             conflictsDetail = conflictDetails,
-            message = message
+            message = buildMessage(pushed, pulled, updated, conflicts, failed, skipped)
+        )
+    }
+
+    /** 写入按后端隔离的基线（不改动 Room 表结构） */
+    private suspend fun upsertBaseline(
+        scope: String, key: String, localHash: String, remoteUpdatedAt: Long
+    ) {
+        syncStateDao.upsert(
+            SyncStateEntity(
+                bookKey = SyncLayout.scopedKey(scope, key),
+                localHash = localHash,
+                remoteUpdatedAt = remoteUpdatedAt,
+                lastSyncAt = System.currentTimeMillis()
+            )
         )
     }
 
@@ -330,7 +384,8 @@ class WebDavSyncManager(
     private suspend fun applyMerge(
         local: LocalSyncView,
         merge: MergePlan,
-        syncBookmarks: Boolean
+        syncBookmarks: Boolean,
+        source: String
     ) {
         if (merge.progressFromRemote) {
             val b = bookRepo.getBook(local.id)
@@ -344,7 +399,7 @@ class WebDavSyncManager(
                         readingTimeSec = merge.progress.readingTimeSec,
                         progressStamp = merge.progressStamp,
                         progressUpdatedAt = maxOf(b.progressUpdatedAt, merge.remoteUpdatedAt),
-                        source = "webdav"
+                        source = source
                     )
                 )
             }
@@ -373,6 +428,31 @@ class WebDavSyncManager(
     ): Pair<List<RemoteBookmark>, List<RemoteBookmarkTombstone>> =
         SyncMerge.splitOps(localBookmarkOps(bookId))
 
+    /**
+     * 原子下载：先写 .sync-tmp，成功后再替换目标文件（旧文件先改名备份，失败可回滚）。
+     * 避免网络中断把本地正在读的书籍文件截断成半截，也避免留下未入库的残缺文件。
+     */
+    private suspend fun downloadAtomic(transport: SyncTransport, rel: String, dest: File): Boolean {
+        val tmp = File(dest.absolutePath + ".sync-tmp")
+        val backup = File(dest.absolutePath + ".sync-bak")
+        try {
+            if (tmp.exists()) tmp.delete()
+            if (!transport.downloadBook(rel, tmp) || !tmp.exists()) return false
+            if (dest.exists()) {
+                if (backup.exists() && !backup.delete()) return false
+                if (!dest.renameTo(backup)) return false
+            }
+            if (!tmp.renameTo(dest)) {
+                if (backup.exists()) backup.renameTo(dest)
+                return false
+            }
+            if (backup.exists()) backup.delete()
+            return true
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
+    }
+
     private fun signatureOf(book: BookEntity, file: File): String =
         SyncEngine.signature(
             book.chapterIndex, book.charOffset, book.progressPercent,
@@ -380,8 +460,6 @@ class WebDavSyncManager(
             if (file.exists()) file.lastModified() else 0L,
             if (file.exists()) file.length() else book.fileSize
         )
-
-    private fun cloudFile(name: String, url: String) = CloudFile(name, url, isDir = false, sizeBytes = 0)
 
     private fun buildMessage(
         pushed: Int, pulled: Int, updated: Int, conflicts: Int, failed: Int, skipped: Int

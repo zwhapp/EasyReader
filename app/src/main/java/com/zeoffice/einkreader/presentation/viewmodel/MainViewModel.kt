@@ -8,6 +8,9 @@ import com.zeoffice.einkreader.AppConfig
 import com.zeoffice.einkreader.cloud.AliyunDriveClient
 import com.zeoffice.einkreader.cloud.BaiduTokenPoll
 import com.zeoffice.einkreader.cloud.CloudProviderFactory
+import com.zeoffice.einkreader.cloud.CloudSyncManager
+import com.zeoffice.einkreader.cloud.SyncAccountPrefs
+import com.zeoffice.einkreader.cloud.SyncTransportFactory
 import com.zeoffice.einkreader.data.db.BookEntity
 import com.zeoffice.einkreader.data.db.EinkDatabase
 import com.zeoffice.einkreader.data.repository.BookRepository
@@ -35,7 +38,6 @@ import com.zeoffice.einkreader.reader.TextCleaner
 import com.zeoffice.einkreader.updater.GitHubRelease
 import com.zeoffice.einkreader.updater.GitHubUpdater
 import com.zeoffice.einkreader.updater.InstallResult
-import com.zeoffice.einkreader.webdav.WebDavSyncManager
 import com.zeoffice.einkreader.webdav.SyncDeviceId
 import com.zeoffice.einkreader.webdav.SyncMerge
 import kotlinx.coroutines.Dispatchers
@@ -143,10 +145,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val updateRunning: StateFlow<Boolean> = _updateRunning.asStateFlow()
     private var updateJob: Job? = null
 
-    /** WebDAV 同步状态 (进度 / 结果 / 错误) */
+    /** 多后端同步状态 (进度 / 结果 / 错误) */
     private val _syncStatus = MutableStateFlow<SyncStatus>(SyncStatus.Idle)
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
     private var syncJob: Job? = null
+    private val syncAccountPrefs = SyncAccountPrefs(app)
 
     /** 自动同步（启动拉取 / 退出推送）的轻量提示, 供书架页横幅与 Toast 使用 */
     private val _autoSyncNotice = MutableStateFlow<AutoSyncNotice?>(null)
@@ -366,8 +369,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     _importStatus.value = ImportStatus.Importing(msg)
                 }
                 if (provider is AliyunDriveClient) {
-                    cloudRepo.save(provider.updatedAccount())
-                    loadAccounts()
+                    // refresh_token 轮换后需要落库，否则下次导入/同步鉴权失效
+                    provider.updatedAccount()?.let { cloudRepo.save(it); loadAccounts() }
                 }
                 if (!ok) {
                     _importStatus.value = ImportStatus.Error("下载失败")
@@ -618,6 +621,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         loadAccounts()
     }
 
+    /** 更新账户（如百度同步目录 / 阿里云盘 refresh_token 轮换） */
+    fun updateAccount(a: CloudAccount) = vmScope.launch(Dispatchers.IO) {
+        cloudRepo.save(a)
+        loadAccounts()
+    }
+
     /**
      * WebDAV 测试连接 — 验证地址 / 账号 / 密码, 返回结果描述 (成功或具体失败原因)
      */
@@ -628,7 +637,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
     /**
-     * 手动触发同步（WebDAV 同步页调用）— 书籍文件 + 阅读进度 + 书签笔记。
+     * 手动触发同步（同步页调用）— 书籍文件 + 阅读进度 + 书签笔记，支持 WebDAV / 百度网盘 / 阿里云盘。
+     * 本次选择的账户同时记为「默认同步账户」，供启动 / 退出自动同步复用。
      * @param syncFiles true=同步书籍文件与进度; false=仅同步阅读进度
      */
     fun syncLibrary(
@@ -638,13 +648,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         syncFiles: Boolean,
         syncBookmarks: Boolean = true
     ) {
+        syncAccountPrefs.setDefaultId(account.id)
         runSync(account, direction, policy, syncFiles, syncBookmarks, isAuto = false)
     }
 
     /**
-     * 执行一次同步（手动与自动共用）。
-     * 自动同步采用双向合并（一次同步同时完成拉取与推送, 仅传变化, 冲突以修改时间为准）,
-     * 网络瞬时异常由 [WebDavSyncManager] 内部重试 3 次指数退避; 最终失败写入 [_autoSyncNotice] 供提示。
+     * 执行一次同步（手动与自动共用，三个后端走同一套 [CloudSyncManager] 编排）。
+     * 自动同步采用双向合并（一次同步同时完成拉取与推送, 仅传变化）,
+     * 网络瞬时异常由 [CloudSyncManager] 内部重试 3 次指数退避; 最终失败写入 [_autoSyncNotice] 供提示。
      * @param isAuto true=自动同步（启动拉取/退出推送）: 进度与结果额外写入 [_autoSyncNotice], 供书架横幅/Toast 轻提示
      */
     private fun runSync(
@@ -656,14 +667,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         isAuto: Boolean
     ) {
         if (syncJob?.isActive == true) return
+        val backend = SyncTransportFactory.displayName(account.provider)
         syncJob = vmScope.launch(Dispatchers.IO) {
-            _syncStatus.value = SyncStatus.Syncing("正在连接服务器…", 0, 0)
-            if (isAuto) _autoSyncNotice.value = AutoSyncNotice.Syncing("WebDAV 自动同步中…")
+            _syncStatus.value = SyncStatus.Syncing("正在连接 $backend…", 0, 0)
+            if (isAuto) _autoSyncNotice.value = AutoSyncNotice.Syncing("$backend 自动同步中…")
             try {
-                val manager = WebDavSyncManager(app, bookRepo, bookmarkRepo, db.syncStateDao())
-                val result = manager.sync(account, direction, policy, syncFiles, syncBookmarks) { msg, done, total ->
-                    _syncStatus.value = SyncStatus.Syncing(msg, done, total)
-                }
+                val manager = CloudSyncManager(app, bookRepo, bookmarkRepo, db.syncStateDao())
+                val result = manager.sync(
+                    account = account,
+                    direction = direction,
+                    policy = policy,
+                    syncFiles = syncFiles,
+                    syncBookmarks = syncBookmarks,
+                    onProgress = { msg, done, total ->
+                        _syncStatus.value = SyncStatus.Syncing(msg, done, total)
+                    },
+                    onAccountUpdated = { updated ->
+                        // 阿里云盘刷新令牌会轮换 refresh_token，必须落库，否则下次同步鉴权失效
+                        cloudRepo.save(updated)
+                        loadAccounts()
+                    }
+                )
                 loadBooks()
                 _syncStatus.value = SyncStatus.Done(result)
                 if (isAuto) {
@@ -687,7 +711,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 启动进入后自动拉取：采用双向合并（一次同步同时完成拉取与推送，仅传变化）。
-     * 仅当开启"启动自动同步"且本次进程尚未拉取过时执行；无 WebDAV 账户则静默跳过。
+     * 仅当开启"启动自动同步"且本次进程尚未拉取过时执行；无可用账户则静默跳过。
      */
     fun tryAutoPull() {
         if (autoPulledThisSession) return
@@ -699,7 +723,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 退出程序前自动推送：在 ProcessLifecycle onStop 钩子中调用。
-     * 复用双向合并，仅推送本地变化；无 WebDAV 账户或开关关闭时静默跳过。
+     * 复用双向合并；无可用同步账户或开关关闭时静默跳过。
      */
     fun tryAutoPush() {
         val s = _settings.value
@@ -707,12 +731,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         launchAutoSync()
     }
 
-    /** 读取首个 WebDAV 账户，并以设置中配置的策略/范围发起一次自动双向同步 */
+    /** 优先使用用户在同步页选定的账户，否则取第一个可用后端，发起一次自动双向同步 */
     private fun launchAutoSync() {
         if (syncJob?.isActive == true) return
         vmScope.launch(Dispatchers.IO) {
-            val account = runCatching { cloudRepo.getAll() }.getOrNull()
-                ?.firstOrNull { it.provider == "webdav" } ?: return@launch
+            val accounts = runCatching { cloudRepo.getAll() }.getOrNull().orEmpty()
+                .filter { SyncTransportFactory.supported(it.provider) }
+            val preferredId = syncAccountPrefs.defaultId()
+            val account = accounts.firstOrNull { it.id == preferredId }
+                ?: accounts.firstOrNull() ?: return@launch
             val s = _settings.value
             val policy = runCatching { ConflictPolicy.valueOf(s.syncPolicy) }
                 .getOrDefault(ConflictPolicy.NEWER_WINS)

@@ -9,23 +9,27 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.zeoffice.einkreader.cloud.SyncTransportFactory
+import com.zeoffice.einkreader.domain.model.CloudAccount
 import com.zeoffice.einkreader.domain.model.sync.*
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
+import kotlinx.coroutines.launch
 
 /**
- * WebDAV 双向同步 — 书籍文件、阅读进度与书签/笔记。
- * 支持: 账户选择 / 方向(双向·仅上传·仅下载) / 冲突策略 / 书籍文件开关 / 书签与笔记开关 / 结果汇总 / 重试。
+ * 书库同步 — WebDAV / 百度网盘 / 阿里云盘 共用同一套 v2 索引与冲突归并模型。
+ * 支持: 账户选择 / 方向(双向·仅上传·仅下载) / 冲突策略 / 书籍文件开关 / 书签与笔记开关 / 结果汇总。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
     val allAccounts by vm.accounts.collectAsState()
-    val accounts = allAccounts.filter { it.provider == "webdav" }
+    val accounts = allAccounts.filter { SyncTransportFactory.supported(it.provider) }
     val syncStatus by vm.syncStatus.collectAsState()
     val settings by vm.settings.collectAsState()
+    val scope = rememberCoroutineScope()
 
     var selectedId by remember { mutableStateOf<Int?>(accounts.firstOrNull()?.id) }
     val selectedAccount = accounts.firstOrNull { it.id == selectedId } ?: accounts.firstOrNull()
@@ -44,17 +48,21 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
     var syncFiles by remember { mutableStateOf(settings.syncFiles) }
     var syncBookmarks by remember { mutableStateOf(settings.syncBookmarks) }
     var showPolicy by remember { mutableStateOf(false) }
+    var showAliAdd by remember { mutableStateOf(false) }
 
     val isSyncing = syncStatus is SyncStatus.Syncing
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("WebDAV 同步") },
+                title = { Text("书库同步") },
                 navigationIcon = {
                     IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.Filled.ArrowBack, "返回")
                     }
+                },
+                actions = {
+                    TextButton(onClick = { showAliAdd = true }) { Text("添加阿里云盘") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
@@ -67,18 +75,22 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Text(
+                    "书籍、进度与书签按同一套索引同步；三个后端可任选其一，也可互为接力。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
                 if (accounts.isEmpty()) {
                     Card(Modifier.fillMaxWidth()) {
                         Column(
                             Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            Text("尚未添加同步账户", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "尚未添加 WebDAV 服务器",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                "请先在「从 WebDAV 导入」中添加并测试服务器，再回来同步书库。",
+                                "可在「从 WebDAV 导入」添加服务器、在网盘入口扫码登录百度网盘，" +
+                                        "或点右上角「添加阿里云盘」填入 refresh_token。",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -86,17 +98,34 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
                         }
                     }
                 } else {
-                    // 账户选择
+                    // 账户选择（含后端标签）
                     Text("同步账户", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         accounts.forEach { acc ->
                             FilterChip(
                                 selected = acc.id == selectedAccount?.id,
                                 onClick = { selectedId = acc.id },
-                                label = { Text(acc.name.ifBlank { "WebDAV" }) }
+                                label = {
+                                    Text("${acc.name.ifBlank { SyncTransportFactory.displayName(acc.provider) }} · ${SyncTransportFactory.displayName(acc.provider)}")
+                                }
                             )
                         }
                     }
+                    Text(
+                        "手动同步选择的账户会成为「默认同步账户」，供启动 / 退出自动同步复用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    SyncRootSection(
+                        account = selectedAccount,
+                        onSaveRoot = { acc, root ->
+                            scope.launch { vm.updateAccount(acc.copy(extra = root)) }
+                        }
+                    )
 
                     HorizontalDivider()
 
@@ -112,7 +141,7 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
                         }
                     }
                     Text(
-                        "双向：本地与服务器互相同步；仅上传/仅下载：单向覆盖。",
+                        "双向：本地与云端互相同步；仅上传/仅下载：单向覆盖。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -235,6 +264,123 @@ fun SyncScreen(nav: NavHostController, vm: MainViewModel) {
             }
         }
     }
+
+    if (showAliAdd) {
+        AddAliyunAccountDialog(
+            onDismiss = { showAliAdd = false },
+            onSave = { name, token ->
+                scope.launch {
+                    val id = vm.saveAccount(
+                        CloudAccount(
+                            provider = "ali",
+                            name = name.ifBlank { "阿里云盘" },
+                            refreshToken = token.trim()
+                        )
+                    )
+                    selectedId = id.toInt()
+                    showAliAdd = false
+                }
+            }
+        )
+    }
+}
+
+/** 同步目录说明；百度网盘需按开放平台应用目录改写，提供输入框直接保存 */
+@Composable
+private fun SyncRootSection(
+    account: CloudAccount?,
+    onSaveRoot: (CloudAccount, String) -> Unit
+) {
+    val acc = account ?: return
+    var rootText by remember(acc.id, acc.extra) {
+        mutableStateOf(
+            if (acc.provider == "baidu") {
+                acc.extra.takeIf { it.startsWith("/apps/") } ?: "/apps/EasyReader"
+            } else ""
+        )
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("同步目录", style = MaterialTheme.typography.titleSmall)
+            when (acc.provider) {
+                "webdav" -> Text(
+                    "${acc.host.trimEnd('/')}/EasyReader/library.json 与 books/",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                "ali" -> Text(
+                    "/EasyReader/library.json 与 /EasyReader/books/",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                "baidu" -> {
+                    OutlinedTextField(
+                        value = rootText,
+                        onValueChange = { rootText = it },
+                        label = { Text("百度应用数据目录") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Text(
+                        "百度开放平台只允许第三方应用读写「我的网盘 / 我的应用数据」目录。" +
+                                "请把上面的目录改成开放平台分配的应用目录（形如 /apps/<应用名>），" +
+                                "否则同步会返回目录权限错误。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = { onSaveRoot(acc, rootText.trim()) },
+                        enabled = rootText.startsWith("/apps/") && rootText.length > "/apps/".length
+                    ) { Text("保存目录") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddAliyunAccountDialog(
+    onDismiss: () -> Unit,
+    onSave: (name: String, refreshToken: String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加阿里云盘账户") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "从阿里云盘网页端获取 refresh_token 后填入；应用会自动换取 access_token，" +
+                            "并在令牌轮换后自动保存新的 refresh_token。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("备注名（可选）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = { Text("refresh_token") },
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(name, token) },
+                enabled = token.isNotBlank()
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -283,5 +429,5 @@ private fun directionLabel(d: SyncDirection): String = when (d) {
 private fun policyLabel(p: ConflictPolicy): String = when (p) {
     ConflictPolicy.NEWER_WINS -> "以较新者为准"
     ConflictPolicy.LOCAL_WINS -> "以本地为准"
-    ConflictPolicy.REMOTE_WINS -> "以服务器为准"
+    ConflictPolicy.REMOTE_WINS -> "以云端为准"
 }

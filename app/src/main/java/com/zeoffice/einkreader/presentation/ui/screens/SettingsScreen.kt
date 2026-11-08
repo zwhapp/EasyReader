@@ -376,10 +376,10 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
 
             Divider()
 
-            // ===== WebDAV 自动同步 =====
-            Text("WebDAV 自动同步", style = MaterialTheme.typography.titleSmall)
+            // ===== 自动同步（WebDAV / 百度网盘 / 阿里云盘）=====
+            Text("自动同步", style = MaterialTheme.typography.titleSmall)
             Text(
-                "开启后：进入程序自动从服务器拉取并合并书籍与进度；退出前自动将本地推送至服务器。可在书架页查看同步状态。",
+                "开启后：进入程序自动从默认同步账户（在同步页选择）拉取并合并书籍与进度；退出前自动推送。可在书架页查看同步状态。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -393,7 +393,7 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                 Column(Modifier.weight(1f)) {
                     Text("启动自动同步", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "进入程序时自动从 WebDAV 拉取远程书籍与进度并合并",
+                        "进入程序时自动从默认同步账户拉取云端书籍与进度并合并",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -413,7 +413,7 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                 Column(Modifier.weight(1f)) {
                     Text("退出自动同步", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "退出程序前自动将本地书籍与进度推送至 WebDAV 服务器",
+                        "退出程序前自动将本地书籍与进度推送至默认同步账户",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -454,7 +454,7 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
                 }
             }
             Text(
-                "“以较新者为准”：本地与服务器修改时间较新的一方覆盖另一方，最贴合多设备续读场景。",
+                "“以较新者为准”：按逻辑时钟裁决阅读进度，书签与笔记按条目归并，最贴合多设备续读场景。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -506,7 +506,7 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
 private fun autoPolicyLabel(policyName: String): String = when (policyName) {
     ConflictPolicy.NEWER_WINS.name -> "以较新者为准"
     ConflictPolicy.LOCAL_WINS.name -> "以本地为准"
-    ConflictPolicy.REMOTE_WINS.name -> "以服务器为准"
+    ConflictPolicy.REMOTE_WINS.name -> "以云端为准"
     else -> "以较新者为准"
 }
 
