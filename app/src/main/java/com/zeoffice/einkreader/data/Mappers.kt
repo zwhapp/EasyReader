@@ -22,11 +22,15 @@ fun ReadingSettings.toEntity() = ReadingSettingsEntity(
 )
 
 // ---- Bookmark ----
-fun BookmarkEntity.toDomain() = Bookmark(id, bookId, chapterIndex, charOffset, quote, note, createdAt)
+fun BookmarkEntity.toDomain() = Bookmark(
+    id, bookId, chapterIndex, charOffset, quote, note, createdAt,
+    uid, updatedAt, deleted, stamp
+)
 fun Bookmark.toEntity() = BookmarkEntity(
     id, bookId, chapterIndex, charOffset, quote, note,
     // 兼容旧数据 / 远端同步过来的 createdAt=0：补当前时间，避免排序与冲突裁决失效
-    if (createdAt > 0) createdAt else System.currentTimeMillis()
+    if (createdAt > 0) createdAt else System.currentTimeMillis(),
+    uid, updatedAt, deleted, stamp
 )
 
 // ---- CloudAccount ----

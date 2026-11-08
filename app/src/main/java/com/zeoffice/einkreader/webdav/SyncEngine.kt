@@ -21,6 +21,12 @@ object SyncEngine {
     const val INDEX_FILE = "library.json"
     const val BOOKS_FOLDER = "books"
 
+    /**
+     * 索引格式版本。v2 只新增可选字段，v1 客户端读 v2 会忽略未知字段、
+     * v2 客户端读 v1 会把缺失字段降级为按时间戳比较 —— 双向兼容，无需清库或迁移远端。
+     */
+    const val INDEX_VERSION = 2
+
     private val GSON: Gson = GsonBuilder().disableHtmlEscaping().create()
 
     /** 稳定身份键: sha1(标题\0作者\0格式) — 跨设备稳定匹配同一本书 */
@@ -69,7 +75,9 @@ object SyncEngine {
             charOffset = book.charOffset,
             progressPercent = book.progressPercent,
             lastPage = book.lastPage,
-            readingTimeSec = book.readingTimeSec
+            readingTimeSec = book.readingTimeSec,
+            progressStamp = book.progressStamp,
+            contentHash = SyncMerge.fileHash(file)
         )
     }
 
@@ -134,11 +142,21 @@ object SyncEngine {
         return result
     }
 
-    /** 本地视图 -> 远程条目 (用于上传后写回索引) */
+    /**
+     * 本地视图 -> 远程索引条目。
+     * 新增参数全部带默认值，旧调用（仅 view + path + bookmarks）行为不变；
+     * 同步执行层可传入「归并后」的进度 / 书签 / 墓碑，避免整条覆盖丢数据。
+     */
     fun localToEntry(
         view: LocalSyncView,
         fileRelPath: String,
-        bookmarks: List<RemoteBookmark> = emptyList()
+        bookmarks: List<RemoteBookmark> = emptyList(),
+        tombstones: List<RemoteBookmarkTombstone> = emptyList(),
+        progress: RemoteProgress = view.toRemoteProgress(),
+        progressStamp: String = view.progressStamp,
+        contentHash: String = view.contentHash,
+        updatedAt: Long = view.updatedAt,
+        size: Long = view.size
     ): RemoteBookEntry =
         RemoteBookEntry(
             key = view.key,
@@ -146,10 +164,13 @@ object SyncEngine {
             author = view.author,
             format = view.format,
             file = fileRelPath,
-            size = view.size,
-            updatedAt = view.updatedAt,
-            progress = view.toRemoteProgress(),
-            bookmarks = bookmarks
+            size = size,
+            updatedAt = updatedAt,
+            progress = progress,
+            bookmarks = bookmarks,
+            contentHash = contentHash,
+            progressStamp = progressStamp,
+            bookmarkTombstones = tombstones
         )
 
     /** 生成书籍文件相对路径 (相对同步根目录) */
@@ -186,7 +207,26 @@ object SyncEngine {
                                     charOffset = intOf(b, "charOffset"),
                                     quote = strOf(b, "quote"),
                                     note = strOf(b, "note"),
-                                    createdAt = longOf(b, "createdAt")
+                                    createdAt = longOf(b, "createdAt"),
+                                    // v1 索引没有这些字段 -> 空值，由 SyncMerge 降级派生
+                                    id = strOf(b, "id"),
+                                    updatedAt = longOf(b, "updatedAt"),
+                                    stamp = strOf(b, "stamp")
+                                )
+                            )
+                        }
+                    }
+                    val tombArr = o.getAsJsonArray("bookmarkTombstones")
+                    val tombstones = ArrayList<RemoteBookmarkTombstone>()
+                    if (tombArr != null) {
+                        for (tel in tombArr) {
+                            if (!tel.isJsonObject) continue
+                            val t = tel.asJsonObject
+                            tombstones.add(
+                                RemoteBookmarkTombstone(
+                                    id = strOf(t, "id"),
+                                    stamp = strOf(t, "stamp"),
+                                    updatedAt = longOf(t, "updatedAt")
                                 )
                             )
                         }
@@ -207,7 +247,10 @@ object SyncEngine {
                                 lastPage = intOf(p, "lastPage"),
                                 readingTimeSec = longOf(p, "readingTimeSec")
                             ),
-                            bookmarks = bookmarks
+                            bookmarks = bookmarks,
+                            contentHash = strOf(o, "contentHash"),
+                            progressStamp = strOf(o, "progressStamp"),
+                            bookmarkTombstones = tombstones
                         )
                     )
                 }

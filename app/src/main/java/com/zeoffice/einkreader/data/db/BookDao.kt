@@ -22,7 +22,9 @@ data class BookEntity(
     val chapterCount: Int = 0,
     val coverPath: String = "",
     /** 阅读进度最近更新时间 (毫秒) — 用于同步时检测本地进度是否改动 */
-    val progressUpdatedAt: Long = 0L
+    val progressUpdatedAt: Long = 0L,
+    /** 进度的 HLC 逻辑时钟 wall:counter:deviceId — 多端裁决不依赖设备本地时钟准确度 */
+    val progressStamp: String = ""
 )
 
 @Dao

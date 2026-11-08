@@ -36,6 +36,8 @@ import com.zeoffice.einkreader.updater.GitHubRelease
 import com.zeoffice.einkreader.updater.GitHubUpdater
 import com.zeoffice.einkreader.updater.InstallResult
 import com.zeoffice.einkreader.webdav.WebDavSyncManager
+import com.zeoffice.einkreader.webdav.SyncDeviceId
+import com.zeoffice.einkreader.webdav.SyncMerge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -488,11 +490,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         savePositionJob?.cancel()
         savePositionJob = vmScope.launch(Dispatchers.IO) {
             val b = bookRepo.getBook(bookId) ?: return@launch
+            val now = System.currentTimeMillis()
+            val stamp = SyncMerge.next(
+                now, b.progressStamp.ifBlank { null }, SyncDeviceId.get(app)
+            )
             val updated = b.copy(
                 chapterIndex = chapterIndex,
                 charOffset = charOffset,
                 progressPercent = progressPercent,
-                progressUpdatedAt = System.currentTimeMillis()
+                progressUpdatedAt = now,
+                progressStamp = stamp
             )
             bookRepo.update(updated)
             // 只更新内存中的这一条，不再 loadBooks() 全表刷新（会触发阅读页重组/卡顿）
@@ -512,12 +519,30 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun addBookmark(b: Bookmark) = vmScope.launch(Dispatchers.IO) {
-        bookmarkRepo.add(b)
+        val now = System.currentTimeMillis()
+        val uid = b.uid.ifBlank { SyncMerge.bookmarkId(b.chapterIndex, b.charOffset, b.quote) }
+        // 若同 uid 已有记录（含墓碑），沿用它的时钟继续递增，保证「复活」一定晚于「删除」
+        val existing = bookmarkRepo.getAllByBook(b.bookId).firstOrNull {
+            it.uid.ifBlank { SyncMerge.bookmarkId(it.chapterIndex, it.charOffset, it.quote) } == uid
+        }
+        val stamp = SyncMerge.next(
+            now, existing?.stamp?.ifBlank { null }, SyncDeviceId.get(app)
+        )
+        bookmarkRepo.addOrRevive(
+            b.copy(
+                createdAt = if (b.createdAt > 0) b.createdAt else now,
+                updatedAt = now,
+                uid = uid,
+                stamp = stamp,
+                deleted = false
+            )
+        )
         loadBookmarks(b.bookId)
     }
 
     fun removeBookmark(id: Int, bookId: Int) = vmScope.launch(Dispatchers.IO) {
-        bookmarkRepo.remove(id)
+        // 软删除写墓碑：物理删除会让其他设备把这条书签重新同步回来
+        bookmarkRepo.remove(id, System.currentTimeMillis(), SyncDeviceId.get(app))
         loadBookmarks(bookId)
     }
 

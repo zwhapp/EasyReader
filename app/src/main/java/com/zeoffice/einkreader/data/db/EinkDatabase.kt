@@ -13,7 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CloudAccountEntity::class,
         SyncStateEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class EinkDatabase : RoomDatabase() {
@@ -146,6 +146,33 @@ abstract class EinkDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v9 → v10: 多端一致性字段。
+         *  - books.progressStamp：进度的 HLC 逻辑时钟；
+         *  - bookmarks.uid / updatedAt / stamp / deleted：稳定 id、修改时钟与软删除墓碑。
+         * 幂等；旧数据列为空/0，运行时按 (章节,偏移,引文) 派生 uid、按 createdAt 降级 stamp，
+         * 因此升级后已有书签与进度完全保留，且能与尚未升级的设备正常同步。
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if (!db.hasColumn("books", "progressStamp")) {
+                    db.execSQL("ALTER TABLE books ADD COLUMN progressStamp TEXT NOT NULL DEFAULT ''")
+                }
+                if (!db.hasColumn("bookmarks", "uid")) {
+                    db.execSQL("ALTER TABLE bookmarks ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+                }
+                if (!db.hasColumn("bookmarks", "updatedAt")) {
+                    db.execSQL("ALTER TABLE bookmarks ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("bookmarks", "deleted")) {
+                    db.execSQL("ALTER TABLE bookmarks ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+                }
+                if (!db.hasColumn("bookmarks", "stamp")) {
+                    db.execSQL("ALTER TABLE bookmarks ADD COLUMN stamp TEXT NOT NULL DEFAULT ''")
+                }
+            }
+        }
+
         fun get(context: Context): EinkDatabase {
             // 外层快速路径 + 同步块内二次判空：避免两个线程同时看到 null 时各建一个实例。
             return INSTANCE ?: synchronized(this) {
@@ -155,9 +182,10 @@ abstract class EinkDatabase : RoomDatabase() {
                     "eink_reader.db"
                 ).addMigrations(
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                    MIGRATION_9_10
                 )
-                    // 不使用 fallbackToDestructiveMigration：迁移链 2→9 已完整，
+                    // 不使用 fallbackToDestructiveMigration：迁移链 2→10 已完整，
                     // 任何缺失迁移都应报错而不是静默清空书库/进度/书签。
                     .build()
                     .also { INSTANCE = it }
