@@ -416,7 +416,6 @@ private fun sourceLabel(s: String): String = when (s) {
     "local" -> "本机"
     "webdav" -> "WebDAV"
     "baidu" -> "百度网盘"
-    "ali" -> "阿里云盘"
     else -> s
 }
 

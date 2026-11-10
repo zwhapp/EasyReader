@@ -9,7 +9,7 @@ import java.io.InputStream
 import java.security.MessageDigest
 
 /**
- * 同步传输层统一接口 — WebDAV / 百度网盘 / 阿里云盘 共用同一套同步编排。
+ * 同步传输层统一接口 — WebDAV / 百度网盘 共用同一套同步编排。
  *
  * 语义约定（所有后端一致）：
  *  - 同步根目录下固定放置 `library.json`（v2 索引）与 `books/<key>.<ext>`（书籍文件）；
@@ -42,7 +42,7 @@ interface SyncTransport {
     suspend fun downloadBook(relPath: String, dest: File): Boolean
 
     /**
-     * 授权过程中凭据若发生轮换（阿里云盘 refresh_token 每次刷新都会变），
+     * 授权过程中凭据若发生轮换（如 OAuth refresh_token 轮换），
      * 返回更新后的账户供编排层持久化；无变化返回 null。
      */
     fun updatedAccount(): CloudAccount? = null

@@ -38,10 +38,9 @@ class SyncTransportTest {
     }
 
     @Test
-    fun `三个后端的同步根目录可读`() {
+    fun `当前支持后端的同步根目录可读`() {
         assertEquals("/apps/EasyReader", BaiduPanClient(account(1, "baidu")).remoteRoot)
         assertEquals("/apps/MyApp", BaiduPanClient(account(1, "baidu", "/apps/MyApp")).remoteRoot)
-        assertEquals("/EasyReader", AliyunDriveClient(account(2, "ali")).remoteRoot)
     }
 
     @Test
@@ -168,8 +167,10 @@ class SyncTransportTest {
     // ---------- 工厂与索引后端无关性 ----------
 
     @Test
-    fun `工厂仅支持三个后端`() {
-        listOf("webdav", "baidu", "ali").forEach { assertTrue(SyncTransportFactory.supported(it)) }
+    fun `工厂仅支持 WebDAV 与百度网盘`() {
+        assertEquals(listOf("webdav", "baidu"), SyncTransportFactory.providers)
+        listOf("webdav", "baidu").forEach { assertTrue(SyncTransportFactory.supported(it)) }
+        assertFalse(SyncTransportFactory.supported("ali"))
         assertFalse(SyncTransportFactory.supported("onedrive"))
         assertFalse(SyncTransportFactory.supported(""))
     }
@@ -178,7 +179,6 @@ class SyncTransportTest {
     fun `工厂显示名`() {
         assertEquals("WebDAV", SyncTransportFactory.displayName("webdav"))
         assertEquals("百度网盘", SyncTransportFactory.displayName("baidu"))
-        assertEquals("阿里云盘", SyncTransportFactory.displayName("ali"))
     }
 
     @Test

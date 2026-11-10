@@ -22,7 +22,7 @@ import java.io.File
 import java.io.IOException
 
 /**
- * 多后端同步编排（WebDAV / 百度网盘 / 阿里云盘共用）。
+ * 多后端同步编排（WebDAV / 百度网盘 共用）。
  *
  * 由 v0.4.9 的 WebDavSyncManager 泛化而来：文件传输全部走 [SyncTransport] 的相对路径语义，
  * 三个后端的索引格式（library.json v2）、冲突归并模型（HLC / LWW-Element-Set）完全一致，
@@ -47,7 +47,7 @@ class CloudSyncManager(
 ) {
     /**
      * @param onProgress 进度回调 (文案, 已完成数, 总数)
-     * @param onAccountUpdated 授权凭据轮换时回写账户（阿里云盘 refresh_token 会变）
+     * @param onAccountUpdated 授权凭据轮换时回写账户（如 OAuth refresh_token 轮换）
      */
     suspend fun sync(
         account: CloudAccount,
@@ -320,7 +320,7 @@ class CloudSyncManager(
             errors.add("索引写入失败：${e.message ?: "未知错误"}（书籍文件可能已同步，下次将自动重试）")
         }
 
-        // 7. 凭据轮换（阿里云盘 refresh_token）落库，避免下次同步失效
+        // 7. 凭据轮换落库，避免下次同步失效
         runCatching {
             val updatedAccount = transport.updatedAccount()
             if (updatedAccount != null && updatedAccount != account) onAccountUpdated(updatedAccount)

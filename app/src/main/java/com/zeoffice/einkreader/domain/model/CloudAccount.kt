@@ -5,7 +5,7 @@ package com.zeoffice.einkreader.domain.model
  */
 data class CloudAccount(
     val id: Int = 0,
-    val provider: String,   // "webdav" | "baidu" | "ali"
+    val provider: String,   // "webdav" | "baidu"
     val name: String,
     val host: String = "",
     val username: String = "",

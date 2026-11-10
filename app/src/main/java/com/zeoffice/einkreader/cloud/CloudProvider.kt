@@ -4,7 +4,7 @@ import com.zeoffice.einkreader.domain.model.CloudFile
 import java.io.File
 
 /**
- * 云存储统一接口 — 本地/WebDAV/百度网盘/阿里云盘 均实现此接口
+ * 云存储统一接口 — 本地/WebDAV/百度网盘 均实现此接口
  */
 interface CloudProvider {
     val provider: String

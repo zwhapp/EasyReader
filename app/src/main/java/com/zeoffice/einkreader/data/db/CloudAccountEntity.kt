@@ -6,10 +6,9 @@ import androidx.room.PrimaryKey
 /**
  * 云盘/WebDAV 账户 — 凭证仅存于本机数据库, 不上传
  *
- * provider: "webdav" | "baidu" | "ali"
+ * provider: "webdav" | "baidu"
  *  - webdav: host + username + password
- *  - baidu : accessToken + expiresAt (OAuth implicit)
- *  - ali   : refreshToken (用于换取 accessToken)
+ *  - baidu : accessToken + refreshToken + expiresAt (OAuth)
  */
 @Entity(tableName = "cloud_accounts")
 data class CloudAccountEntity(

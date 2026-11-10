@@ -21,7 +21,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.zeoffice.einkreader.domain.model.ReadingSettings
-import com.zeoffice.einkreader.domain.model.sync.ConflictPolicy
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.viewmodel.MainViewModel
 import com.zeoffice.einkreader.utils.EinkDeviceDetector
@@ -376,138 +375,10 @@ fun SettingsScreen(nav: NavHostController, vm: MainViewModel) {
 
             Divider()
 
-            // ===== 自动同步（WebDAV / 百度网盘 / 阿里云盘）=====
-            Text("自动同步", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "开启后：进入程序自动从默认同步账户（在同步页选择）拉取并合并书籍与进度；退出前自动推送。可在书架页查看同步状态。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // 启动自动拉取
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("启动自动同步", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "进入程序时自动从默认同步账户拉取云端书籍与进度并合并",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.autoSyncOnStartup,
-                    onCheckedChange = { vm.saveSettings(settings.copy(autoSyncOnStartup = it)) }
-                )
-            }
-
-            // 退出自动推送
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("退出自动同步", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "退出程序前自动将本地书籍与进度推送至默认同步账户",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.autoSyncOnExit,
-                    onCheckedChange = { vm.saveSettings(settings.copy(autoSyncOnExit = it)) }
-                )
-            }
-
-            // 冲突处理策略
-            Text("冲突处理（双向且两端均改动时）", style = MaterialTheme.typography.titleSmall)
-            var showAutoPolicy by remember { mutableStateOf(false) }
-            ExposedDropdownMenuBox(
-                expanded = showAutoPolicy,
-                onExpandedChange = { showAutoPolicy = it }
-            ) {
-                OutlinedTextField(
-                    value = autoPolicyLabel(settings.syncPolicy),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("冲突解决策略") },
-                    modifier = Modifier.menuAnchor().fillMaxWidth()
-                )
-                ExposedDropdownMenu(
-                    expanded = showAutoPolicy,
-                    onDismissRequest = { showAutoPolicy = false }
-                ) {
-                    ConflictPolicy.values().forEach { p ->
-                        DropdownMenuItem(
-                            text = { Text(autoPolicyLabel(p.name)) },
-                            onClick = {
-                                vm.saveSettings(settings.copy(syncPolicy = p.name))
-                                showAutoPolicy = false
-                            }
-                        )
-                    }
-                }
-            }
-            Text(
-                "“以较新者为准”：按逻辑时钟裁决阅读进度，书签与笔记按条目归并，最贴合多设备续读场景。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // 自动同步书籍文件开关
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("自动同步书籍文件", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "关闭后仅同步阅读进度与书签（适合大文件 / 省流量）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.syncFiles,
-                    onCheckedChange = { vm.saveSettings(settings.copy(syncFiles = it)) }
-                )
-            }
-
-            // 自动同步书签与笔记开关
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("自动同步书签与笔记", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "关闭后仅同步书籍与进度，不同步划线 / 批注",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = settings.syncBookmarks,
-                    onCheckedChange = { vm.saveSettings(settings.copy(syncBookmarks = it)) }
-                )
-            }
+            // ===== 书库同步：方式 / 立即同步按钮 / 策略 / 范围 / 自动同步 集中在此 =====
+            SyncSettingsSection(nav, vm)
         }
     }
-}
-
-/** 自动同步冲突策略中文标签（settings.syncPolicy 存枚举名，渲染时转中文） */
-private fun autoPolicyLabel(policyName: String): String = when (policyName) {
-    ConflictPolicy.NEWER_WINS.name -> "以较新者为准"
-    ConflictPolicy.LOCAL_WINS.name -> "以本地为准"
-    ConflictPolicy.REMOTE_WINS.name -> "以云端为准"
-    else -> "以较新者为准"
 }
 
 @Composable

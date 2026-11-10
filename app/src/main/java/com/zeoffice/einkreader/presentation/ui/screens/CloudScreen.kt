@@ -98,7 +98,6 @@ fun CloudScreen(nav: NavHostController, vm: MainViewModel) {
                     }
                 },
                 actions = {
-                    TextButton(onClick = { nav.navigate("sync") }) { Text("同步") }
                     TextButton(onClick = { showAdd = true }) { Text("添加服务器") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

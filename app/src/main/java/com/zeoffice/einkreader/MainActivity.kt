@@ -36,7 +36,6 @@ import com.zeoffice.einkreader.presentation.ui.screens.CloudScreen
 import com.zeoffice.einkreader.presentation.ui.screens.LibraryScreen
 import com.zeoffice.einkreader.presentation.ui.screens.ReaderScreen
 import com.zeoffice.einkreader.presentation.ui.screens.SettingsScreen
-import com.zeoffice.einkreader.presentation.ui.screens.SyncScreen
 import com.zeoffice.einkreader.presentation.ui.theme.READER_THEMES
 import com.zeoffice.einkreader.presentation.ui.theme.ReaderColors
 import com.zeoffice.einkreader.presentation.ui.theme.einkColorScheme
@@ -145,9 +144,6 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("cloud") {
                             CloudScreen(nav = nav, vm = vm)
-                        }
-                        composable("sync") {
-                            SyncScreen(nav = nav, vm = vm)
                         }
                         composable("baidupan") {
                             BaiduPanScreen(nav = nav, vm = vm)

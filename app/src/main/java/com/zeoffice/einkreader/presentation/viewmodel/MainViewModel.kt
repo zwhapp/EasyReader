@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.zeoffice.einkreader.AppConfig
-import com.zeoffice.einkreader.cloud.AliyunDriveClient
 import com.zeoffice.einkreader.cloud.BaiduTokenPoll
 import com.zeoffice.einkreader.cloud.CloudProviderFactory
 import com.zeoffice.einkreader.cloud.CloudSyncManager
@@ -150,6 +149,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val syncStatus: StateFlow<SyncStatus> = _syncStatus.asStateFlow()
     private var syncJob: Job? = null
     private val syncAccountPrefs = SyncAccountPrefs(app)
+
+    /** 设置页选定的同步方式（provider）；空串 = 未显式选择，由设置页按已有账户推荐 */
+    private val _syncProvider = MutableStateFlow(syncAccountPrefs.provider())
+    val syncProvider: StateFlow<String> = _syncProvider.asStateFlow()
+
+    /** 选择同步方式：写入偏好，手动与自动同步都优先使用该方式下的账户 */
+    fun setSyncProvider(provider: String) {
+        syncAccountPrefs.setProvider(provider)
+        _syncProvider.value = provider
+    }
 
     /** 自动同步（启动拉取 / 退出推送）的轻量提示, 供书架页横幅与 Toast 使用 */
     private val _autoSyncNotice = MutableStateFlow<AutoSyncNotice?>(null)
@@ -367,10 +376,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         "正在下载 ${file.name} (已下载 %.1f MB)".format(mb)
                     }
                     _importStatus.value = ImportStatus.Importing(msg)
-                }
-                if (provider is AliyunDriveClient) {
-                    // refresh_token 轮换后需要落库，否则下次导入/同步鉴权失效
-                    provider.updatedAccount()?.let { cloudRepo.save(it); loadAccounts() }
                 }
                 if (!ok) {
                     _importStatus.value = ImportStatus.Error("下载失败")
@@ -621,7 +626,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         loadAccounts()
     }
 
-    /** 更新账户（如百度同步目录 / 阿里云盘 refresh_token 轮换） */
+    /** 更新账户（如百度同步目录配置） */
     fun updateAccount(a: CloudAccount) = vmScope.launch(Dispatchers.IO) {
         cloudRepo.save(a)
         loadAccounts()
@@ -637,7 +642,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
     /**
-     * 手动触发同步（同步页调用）— 书籍文件 + 阅读进度 + 书签笔记，支持 WebDAV / 百度网盘 / 阿里云盘。
+     * 手动触发同步（设置页调用）— 书籍文件 + 阅读进度 + 书签笔记，支持 WebDAV / 百度网盘。
      * 本次选择的账户同时记为「默认同步账户」，供启动 / 退出自动同步复用。
      * @param syncFiles true=同步书籍文件与进度; false=仅同步阅读进度
      */
@@ -653,7 +658,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 执行一次同步（手动与自动共用，三个后端走同一套 [CloudSyncManager] 编排）。
+     * 执行一次同步（手动与自动共用，多个后端走同一套 [CloudSyncManager] 编排）。
      * 自动同步采用双向合并（一次同步同时完成拉取与推送, 仅传变化）,
      * 网络瞬时异常由 [CloudSyncManager] 内部重试 3 次指数退避; 最终失败写入 [_autoSyncNotice] 供提示。
      * @param isAuto true=自动同步（启动拉取/退出推送）: 进度与结果额外写入 [_autoSyncNotice], 供书架横幅/Toast 轻提示
@@ -683,7 +688,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         _syncStatus.value = SyncStatus.Syncing(msg, done, total)
                     },
                     onAccountUpdated = { updated ->
-                        // 阿里云盘刷新令牌会轮换 refresh_token，必须落库，否则下次同步鉴权失效
+                        // 凭据轮换（如 OAuth refresh_token）必须落库，否则下次同步鉴权失效
                         cloudRepo.save(updated)
                         loadAccounts()
                     }
@@ -731,14 +736,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         launchAutoSync()
     }
 
-    /** 优先使用用户在同步页选定的账户，否则取第一个可用后端，发起一次自动双向同步 */
+    /** 优先使用设置页选定的同步方式与账户，否则取第一个可用后端，发起一次自动双向同步 */
     private fun launchAutoSync() {
         if (syncJob?.isActive == true) return
         vmScope.launch(Dispatchers.IO) {
             val accounts = runCatching { cloudRepo.getAll() }.getOrNull().orEmpty()
                 .filter { SyncTransportFactory.supported(it.provider) }
             val preferredId = syncAccountPrefs.defaultId()
-            val account = accounts.firstOrNull { it.id == preferredId }
+            val provider = _syncProvider.value
+            // 优先：设置页选定的同步方式 + 手动同步时记下的默认账户
+            val account = accounts.firstOrNull { it.id == preferredId && it.provider == provider }
+                ?: accounts.firstOrNull { it.provider == provider }
+                ?: accounts.firstOrNull { it.id == preferredId }
                 ?: accounts.firstOrNull() ?: return@launch
             val s = _settings.value
             val policy = runCatching { ConflictPolicy.valueOf(s.syncPolicy) }
